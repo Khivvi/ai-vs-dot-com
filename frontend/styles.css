@@ -180,6 +180,37 @@ button:active {
   min-height: 440px;
 }
 
+.controls {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.toggle-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: #e5e7eb;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.toggle-pill:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.toggle-pill input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+
 .meta {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
