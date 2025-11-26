@@ -136,6 +136,145 @@ function medianLogPs(records, years) {
 }
 
 // ============================================================
+// 1b. Macro data helpers (port of macrodata-frontend.py)
+// ============================================================
+
+const MACRO_COLUMNS = [
+  "Inflation",
+  "Unemployment",
+  "Interest Rate",
+  "GDP Yearly Growth",
+  "NASDAQ Yearly Growth",
+];
+
+const MACRO_COLORS = [
+  "#f97316",
+  "#22c55e",
+  "#3b82f6",
+  "#eab308",
+  "#a855f7",
+];
+
+function parseMacroCsv(text) {
+  const lines = text.trim().split(/\r?\n/);
+  if (!lines.length) return [];
+
+  const rawHeaders = lines[0].split(",").map((h) => h.trim());
+  const headers = rawHeaders.map((h) =>
+    h === "NASDAQ Yearly Growith" ? "NASDAQ Yearly Growth" : h
+  );
+
+  const rows = lines.slice(1).map((line) => {
+    const cells = line.split(",").map((c) => c.trim());
+    const row = {};
+    headers.forEach((h, i) => {
+      const value = cells[i];
+      if (h === "Date") {
+        const parsed = new Date(value);
+        row.Date = Number.isNaN(parsed.getTime()) ? null : parsed;
+      } else {
+        const num = Number(value);
+        row[h] = Number.isFinite(num) ? num : null;
+      }
+    });
+    return row;
+  });
+
+  const valid = rows.filter(
+    (r) => r.Date instanceof Date && !Number.isNaN(r.Date.getTime())
+  );
+  valid.sort((a, b) => a.Date - b.Date);
+
+  // De-duplicate by date (keep the last occurrence, matching the Python version)
+  const deduped = new Map();
+  valid.forEach((r) => {
+    const key = r.Date.toISOString();
+    deduped.set(key, r);
+  });
+
+  return Array.from(deduped.values());
+}
+
+async function loadMacrodata(paths) {
+  for (const path of paths) {
+    try {
+      const res = await fetch(path);
+      if (!res.ok) continue;
+      const text = await res.text();
+      const parsed = parseMacroCsv(text);
+      if (parsed.length) return parsed;
+    } catch (e) {
+      console.warn("Macrodata fetch failed for", path, e);
+    }
+  }
+  throw new Error("Unable to load macro dataset from any known path.");
+}
+
+function getMacroColumns(rows) {
+  if (!rows.length) return [];
+  return MACRO_COLUMNS.filter((c) => c in rows[0]);
+}
+
+function filterMacroByRange(rows, startIdx, endIdx) {
+  return rows.slice(startIdx, endIdx + 1);
+}
+
+function filterMacroByDate(rows, startDate, endDate) {
+  return rows.filter((r) => r.Date >= startDate && r.Date <= endDate);
+}
+
+function normalizeMacro(rows, columns, method, referenceRows) {
+  if (method === "None") return rows;
+
+  const ref = referenceRows && referenceRows.length ? referenceRows : rows;
+  const stats = {};
+
+  if (method === "Index to 100") {
+    columns.forEach((col) => {
+      const firstValid = rows.map((r) => r[col]).find((v) => v != null);
+      stats[col] = { base: firstValid ?? null };
+    });
+  } else if (method === "Z-score (standardize)") {
+    columns.forEach((col) => {
+      const values = ref.map((r) => r[col]).filter((v) => v != null);
+      const mean = values.reduce((s, v) => s + v, 0) / (values.length || 1);
+      const variance =
+        values.reduce((s, v) => s + (v - mean) ** 2, 0) / (values.length || 1);
+      const std = Math.sqrt(variance);
+      stats[col] = { mean, std };
+    });
+  }
+
+  return rows.map((row) => {
+    const next = { ...row };
+    columns.forEach((col) => {
+      const val = row[col];
+      if (val == null) {
+        next[col] = null;
+        return;
+      }
+
+      if (method === "Index to 100") {
+        const base = stats[col].base;
+        next[col] = base && base !== 0 ? (val / base) * 100 : null;
+      } else if (method === "Z-score (standardize)") {
+        const { mean, std } = stats[col];
+        next[col] = std && std !== 0 ? (val - mean) / std : null;
+      }
+    });
+    return next;
+  });
+}
+
+function formatDateLabel(date) {
+  return new Intl.DateTimeFormat("en", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  }).format(date);
+}
+
+// ============================================================
 // 2. Generic Chart hook
 // ============================================================
 
@@ -565,6 +704,95 @@ function MedianPsBarChart({ dotMed, pureMed, nicheMed }) {
   return <canvas ref={canvasRef} height="320" />;
 }
 
+// 3.5 Macro time-series chart (main + zoom)
+function MacroLineChart({ series, yTitle, height = 420 }) {
+  const canvasRef = useRef(null);
+
+  useChart(
+    canvasRef,
+    () => ({
+      type: "line",
+      data: {
+        datasets: series.map((s, idx) => ({
+          label: s.label,
+          data: s.data,
+          parsing: false,
+          spanGaps: true,
+          tension: 0.25,
+          borderWidth: 3,
+          pointRadius: 0,
+          borderColor: s.color || MACRO_COLORS[idx % MACRO_COLORS.length],
+          backgroundColor: (s.color || MACRO_COLORS[idx % MACRO_COLORS.length]) + "55",
+        })),
+      },
+      plugins: [
+        {
+          id: "macroHoverLine",
+          afterDatasetsDraw(chart) {
+            const { ctx } = chart;
+            const active = chart.tooltip?.getActiveElements?.();
+            if (!active || !active.length) return;
+            const x = active[0].element.x;
+            ctx.save();
+            ctx.strokeStyle = "rgba(148,163,184,0.45)";
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(x, chart.scales.y.top);
+            ctx.lineTo(x, chart.scales.y.bottom);
+            ctx.stroke();
+            ctx.restore();
+          },
+        },
+      ],
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { position: "top", labels: { color: "#e5e7eb" } },
+          tooltip: {
+            backgroundColor: "#020617",
+            borderColor: "#1f2937",
+            borderWidth: 1,
+            padding: 10,
+            callbacks: {
+              title: (items) =>
+                items?.length ? formatDateLabel(new Date(items[0].raw.x)) : "",
+              label: (ctx) => {
+                const val = ctx.raw.y;
+                const original = ctx.raw.original;
+                const normText = val == null ? "n/a" : val.toFixed(2);
+                const origText =
+                  original == null ? "n/a" : original.toLocaleString(undefined, { maximumFractionDigits: 2 });
+                return `${ctx.dataset.label}: ${normText} (actual ${origText})`;
+              },
+            },
+          },
+        },
+        scales: {
+          x: {
+            type: "linear",
+            ticks: {
+              color: "#cbd5e1",
+              callback: (value) => formatDateLabel(new Date(value)),
+              maxTicksLimit: 8,
+            },
+            grid: { color: "rgba(148,163,184,0.12)" },
+          },
+          y: {
+            title: { display: true, text: yTitle, color: "#cbd5e1" },
+            ticks: { color: "#cbd5e1" },
+            grid: { color: "rgba(148,163,184,0.15)" },
+          },
+        },
+      },
+    }),
+    [JSON.stringify(series), yTitle]
+  );
+
+  return <canvas ref={canvasRef} height={height} />;
+}
+
 // ============================================================
 // 4. Main App – only the four charts from Python
 // ============================================================
@@ -581,6 +809,16 @@ function App() {
     aiPure: true,
     aiBroad: true,
   });
+  const [macroRows, setMacroRows] = useState([]);
+  const [macroColumns, setMacroColumns] = useState([]);
+  const [macroSelection, setMacroSelection] = useState({});
+  const [macroRange, setMacroRange] = useState([0, 0]);
+  const [macroNormalization, setMacroNormalization] = useState(
+    "Z-score (standardize)"
+  );
+  const [macroZoom, setMacroZoom] = useState("AI Boom (2022–2025)");
+  const [macroLoading, setMacroLoading] = useState(true);
+  const [macroError, setMacroError] = useState("");
 
   useEffect(() => {
     async function loadAll() {
@@ -645,7 +883,76 @@ function App() {
     loadAll();
   }, []);
 
+  useEffect(() => {
+    async function loadMacro() {
+      try {
+        setMacroLoading(true);
+        setMacroError("");
+        // The macro CSV lives in /data/combined-macrodata.csv at the repo root.
+        // Try both relative and absolute paths so it works whether the site is
+        // hosted from /frontend or from the repo root.
+        const paths = [
+          "../data/combined-macrodata.csv",
+          "./data/combined-macrodata.csv",
+          "data/combined-macrodata.csv",
+          "/data/combined-macrodata.csv",
+        ];
+        const rows = await loadMacrodata(paths);
+        const cols = getMacroColumns(rows);
+        const selection = cols.reduce((acc, c) => ({ ...acc, [c]: true }), {});
+        setMacroRows(rows);
+        setMacroColumns(cols);
+        setMacroSelection(selection);
+        setMacroRange([0, Math.max(rows.length - 1, 0)]);
+      } catch (e) {
+        console.error(e);
+        setMacroError(
+          (e && e.message ? e.message : "") +
+            " Unable to load macro dataset from the data directory (data/combined-macrodata.csv)."
+        );
+      } finally {
+        setMacroLoading(false);
+      }
+    }
+
+    loadMacro();
+  }, []);
+
+  useEffect(() => {
+    if (!macroRows.length) return;
+    setMacroRange(([start, end]) => {
+      const maxIdx = macroRows.length - 1;
+      const safeStart = Math.max(0, Math.min(start, maxIdx));
+      const safeEnd = Math.max(safeStart, Math.min(end, maxIdx));
+      return [safeStart, safeEnd];
+    });
+  }, [macroRows.length]);
+
   const ready = !loading && (dotcom.length || aiBroad.length || aiPure.length);
+
+  const macroSelected = macroColumns.filter((c) => macroSelection[c]);
+  const macroFiltered =
+    macroRows.length && macroRange[1] >= macroRange[0]
+      ? filterMacroByRange(macroRows, macroRange[0], macroRange[1])
+      : [];
+  const macroReference =
+    macroNormalization.startsWith("Z-score") && macroRows.length
+      ? macroRows
+      : macroFiltered;
+
+  const macroNormalized = normalizeMacro(
+    macroFiltered,
+    macroSelected,
+    macroNormalization,
+    macroReference
+  );
+
+  const macroYTitle =
+    macroNormalization === "Index to 100"
+      ? "Index (Base = 100)"
+      : macroNormalization === "Z-score (standardize)"
+        ? "Z-score"
+        : "Value (original units)";
 
   const activeDotcom = cohortToggles.dotcom ? dotcom : [];
   const activeAiPure = cohortToggles.aiPure ? aiPure : [];
@@ -672,6 +979,116 @@ function App() {
     setCohortToggles((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
+  const handleRangeChange = (idx, value) => {
+    const maxIdx = Math.max(macroRows.length - 1, 0);
+    const clamped = Math.min(Math.max(0, value), maxIdx);
+    setMacroRange(([start, end]) => {
+      if (idx === 0) {
+        const nextStart = Math.min(clamped, end);
+        return [nextStart, Math.max(nextStart, end)];
+      }
+      const nextEnd = Math.max(clamped, start);
+      return [Math.min(start, nextEnd), nextEnd];
+    });
+  };
+
+  const toggleMacroColumn = (col) => {
+    setMacroSelection((prev) => ({ ...prev, [col]: !prev[col] }));
+  };
+
+  const buildMacroSeries = (rows, normalizedRows) =>
+    macroSelected.map((col, idx) => ({
+      label: col,
+      color: MACRO_COLORS[idx % MACRO_COLORS.length],
+      data: rows
+        .map((row, i) => {
+          const norm = normalizedRows[i]?.[col];
+          if (norm == null) return null;
+          return { x: row.Date.getTime(), y: norm, original: row[col] };
+        })
+        .filter(Boolean),
+    }));
+
+  let macroSeries = buildMacroSeries(macroFiltered, macroNormalized);
+  let macroChartYTitle = macroYTitle;
+
+  if (
+    !macroSeries.some((s) => s.data.length) &&
+    macroFiltered.length &&
+    macroSelected.length
+  ) {
+    const fallbackNorm = normalizeMacro(
+      macroFiltered,
+      macroSelected,
+      "None",
+      macroFiltered
+    );
+    macroSeries = buildMacroSeries(macroFiltered, fallbackNorm);
+    macroChartYTitle = "Value (original units)";
+  }
+
+  const zoomRanges = {
+    "AI Boom (2022–2025)": [
+      new Date("2022-01-01"),
+      new Date("2025-12-31"),
+    ],
+    "Dot-com Bubble (1995–2002)": [
+      new Date("1995-01-01"),
+      new Date("2002-12-31"),
+    ],
+    "Housing Bubble (2003–2009)": [
+      new Date("2003-01-01"),
+      new Date("2009-12-31"),
+    ],
+    "Smartphone Era (2007–2015)": [
+      new Date("2007-01-01"),
+      new Date("2015-12-31"),
+    ],
+    "Reaganomics (1981–1989)": [
+      new Date("1981-01-01"),
+      new Date("1989-12-31"),
+    ],
+  };
+
+  const zoomDates = zoomRanges[macroZoom];
+  const macroZoomRows =
+    macroZoom === "None" || !zoomDates
+      ? []
+      : filterMacroByDate(macroRows, zoomDates[0], zoomDates[1]);
+  const macroZoomNorm = normalizeMacro(
+    macroZoomRows,
+    macroSelected,
+    macroNormalization,
+    macroReference
+  );
+
+  let macroZoomSeries = buildMacroSeries(macroZoomRows, macroZoomNorm);
+  let macroZoomYTitle = macroYTitle;
+
+  if (
+    macroZoomRows.length &&
+    macroSelected.length &&
+    !macroZoomSeries.some((s) => s.data.length)
+  ) {
+    const fallbackNorm = normalizeMacro(
+      macroZoomRows,
+      macroSelected,
+      "None",
+      macroZoomRows
+    );
+    macroZoomSeries = buildMacroSeries(macroZoomRows, fallbackNorm);
+    macroZoomYTitle = "Value (original units)";
+  }
+
+  const macroStartLabel =
+    macroRows[macroRange[0]] && macroRows[macroRange[0]].Date
+      ? formatDateLabel(macroRows[macroRange[0]].Date)
+      : "—";
+  const macroEndLabel =
+    macroRows[macroRange[1]] && macroRows[macroRange[1]].Date
+      ? formatDateLabel(macroRows[macroRange[1]].Date)
+      : "—";
+
   return (
     <div className="page">
       <div className="hero">
@@ -681,8 +1098,9 @@ function App() {
           <p>
             These charts are generated directly from the CSV and Excel files in
             this repo using the same transformation logic as the Python script.
-            Each card mirrors one of the original Matplotlib figures, but in an
-            interactive, presentation-ready format.
+            The valuation cards mirror the original Matplotlib figures, and the
+            macro section ports the Streamlit macrodata dashboard (date ranges,
+            normalization, and zoom presets) into the React front end.
           </p>
           {loading && (
             <p
@@ -744,6 +1162,142 @@ function App() {
               Pure-play AI cohort
             </label>
           </div>
+        </div>
+      </div>
+
+      <div className="macro-section">
+        <div className="tag">Macroeconomic trends</div>
+        <h2 style={{ marginBottom: 6 }}>Inflation, unemployment, rates, GDP, NASDAQ</h2>
+        <p className="chart-subtitle" style={{ maxWidth: 820, marginTop: 0 }}>
+          Mirrors the macrodata Streamlit app: choose a date window, normalization
+          method (Z-score or index to 100), toggle series, and optionally zoom into
+          a predefined era for a second chart.
+        </p>
+        {macroLoading && (
+          <p style={{ color: "var(--muted)", marginTop: 8 }}>
+            Loading macro dataset&hellip;
+          </p>
+        )}
+        {macroError && (
+          <p style={{ color: "#fecaca", marginTop: 8 }}>{macroError}</p>
+        )}
+        <div className="macro-layout">
+          <div className="card macro-controls">
+            <h3 style={{ marginTop: 0 }}>Controls</h3>
+            <div className="control-group">
+              <div className="field">
+                <label>Date range</label>
+                <div className="range-row">
+                  <input
+                    type="range"
+                    min={0}
+                    max={Math.max(macroRows.length - 1, 0)}
+                    value={macroRange[0]}
+                    onChange={(e) => handleRangeChange(0, Number(e.target.value))}
+                    disabled={!macroRows.length}
+                  />
+                  <input
+                    type="range"
+                    min={0}
+                    max={Math.max(macroRows.length - 1, 0)}
+                    value={macroRange[1]}
+                    onChange={(e) => handleRangeChange(1, Number(e.target.value))}
+                    disabled={!macroRows.length}
+                  />
+                </div>
+                <div className="badges" style={{ marginTop: 6 }}>
+                  <span className="badge">Start: {macroStartLabel}</span>
+                  <span className="badge">End: {macroEndLabel}</span>
+                </div>
+              </div>
+
+              <div className="field">
+                <label>Normalization</label>
+                <select
+                  value={macroNormalization}
+                  onChange={(e) => setMacroNormalization(e.target.value)}
+                  disabled={!macroRows.length}
+                >
+                  <option>Z-score (standardize)</option>
+                  <option>Index to 100</option>
+                  <option>None</option>
+                </select>
+              </div>
+
+              <div className="field">
+                <label>Zoom period (second chart)</label>
+                <select
+                  value={macroZoom}
+                  onChange={(e) => setMacroZoom(e.target.value)}
+                  disabled={!macroRows.length}
+                >
+                  <option>AI Boom (2022–2025)</option>
+                  <option>Dot-com Bubble (1995–2002)</option>
+                  <option>Housing Bubble (2003–2009)</option>
+                  <option>Smartphone Era (2007–2015)</option>
+                  <option>Reaganomics (1981–1989)</option>
+                  <option>None</option>
+                </select>
+              </div>
+
+              <div className="field">
+                <label>Series</label>
+                <div className="controls">
+                  {macroColumns.map((col) => (
+                    <label key={col} className="toggle-pill">
+                      <input
+                        type="checkbox"
+                        checked={!!macroSelection[col]}
+                        onChange={() => toggleMacroColumn(col)}
+                      />
+                      {col}
+                    </label>
+                  ))}
+                  {!macroColumns.length && (
+                    <span style={{ color: "var(--muted)" }}>
+                      Waiting for macro columns&hellip;
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="card chart-card macro-chart-card">
+            <h3 style={{ marginTop: 0 }}>Macroeconomic trends (full range)</h3>
+            <p className="chart-subtitle">
+              Hover to see actual values; y-axis follows the selected normalization.
+            </p>
+            {macroSelected.length && macroSeries.some((s) => s.data.length) ? (
+              <MacroLineChart series={macroSeries} yTitle={macroChartYTitle} />
+            ) : (
+              <p style={{ color: "var(--muted)", marginTop: 12 }}>
+                Choose at least one macro series and make sure the date range
+                contains data.
+              </p>
+            )}
+          </div>
+
+          {macroZoom !== "None" && (
+            <div className="card chart-card macro-chart-card full-span">
+              <h3 style={{ marginTop: 0 }}>Zoomed view: {macroZoom}</h3>
+              <p className="chart-subtitle">
+                Uses the same normalization as the main chart, scoped to the
+                selected historical window.
+              </p>
+              {macroSelected.length && macroZoomSeries.some((s) => s.data.length) ? (
+                <MacroLineChart
+                  series={macroZoomSeries}
+                  yTitle={macroZoomYTitle}
+                  height={360}
+                />
+              ) : (
+                <p style={{ color: "var(--muted)", marginTop: 12 }}>
+                  No zoom data available for the chosen period/series.
+                </p>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
