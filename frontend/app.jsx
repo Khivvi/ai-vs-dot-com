@@ -668,6 +668,18 @@ function App() {
   const pureMed = medianLogPs(activeAiPure, [2023, 2024, 2025]);
   const broadMed = medianLogPs(activeAiBroad, [2023, 2024, 2025]);
 
+  const dotPeakStats = computeBoxStats(dotPeakLog);
+  const aiPurePeakStats = computeBoxStats(aiPurePeakLog);
+  const aiBroadPeakStats = computeBoxStats(aiBroadPeakLog);
+
+  const formatRange = (stat) => {
+    if (!stat || stat.q1 == null || stat.q3 == null) return "n/a";
+    return `${Math.exp(stat.q1).toFixed(1)}×–${Math.exp(stat.q3).toFixed(1)}×`;
+  };
+
+  const formatMedian = (logVal) =>
+    logVal != null ? `${Math.exp(logVal).toFixed(1)}×` : "n/a";
+
   const updateToggle = (key) => {
     setCohortToggles((prev) => ({ ...prev, [key]: !prev[key] }));
   };
@@ -744,6 +756,83 @@ function App() {
               Pure-play AI cohort
             </label>
           </div>
+        </div>
+      </div>
+
+      <div className="card story-card">
+        <div className="story-header">
+          <div>
+            <p className="eyebrow">Narrative takeaway</p>
+            <h3 style={{ margin: "4px 0 10px" }}>
+              There is an AI bubble, but it is sturdier than dot-com
+            </h3>
+            <p className="chart-subtitle">
+              The P/S trajectories show hype, yet today&apos;s leaders are far more
+              diversified than the single-track dot-com firms. Big Tech can
+              absorb AI volatility; narrow AI pure plays still trade on hope.
+            </p>
+          </div>
+          <div className="story-stats">
+            <div className="stat">
+              <div className="stat-label">Median P/S at peak</div>
+              <div className="stat-value">{formatMedian(dotMed)}</div>
+              <p className="stat-footnote">Dot-com 1999–2000</p>
+            </div>
+            <div className="stat">
+              <div className="stat-label">Median P/S at peak</div>
+              <div className="stat-value">{formatMedian(pureMed)}</div>
+              <p className="stat-footnote">Big Tech AI 2023–2025</p>
+            </div>
+            <div className="stat">
+              <div className="stat-label">Median P/S at peak</div>
+              <div className="stat-value">{formatMedian(broadMed)}</div>
+              <p className="stat-footnote">Pure AI 2023–2025</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="story-grid">
+          <div className="story-block">
+            <h4>Bubble vibes, muted extremes</h4>
+            <p>
+              The line and box charts confirm valuation heat, yet the Big Tech
+              cluster holds between {formatRange(aiPurePeakStats)} while
+              dot-coms once stretched wildly beyond that range. Pure AI firms
+              sit higher at {formatRange(aiBroadPeakStats)}, signaling more
+              speculative pricing but still below the 200×–600× excesses of the
+              late 1990s.
+            </p>
+          </div>
+
+          <div className="story-block">
+            <h4>Why the Big 10 are safer</h4>
+            <p>
+              Microsoft, Amazon, Alphabet, Meta, NVIDIA, Apple, Oracle,
+              Salesforce, Adobe, and IBM anchor the modern boom with diversified
+              cash engines—cloud, operating systems, ads, productivity, silicon,
+              and commerce. Their global revenue bases and moats (data centers,
+              GPUs, app stores, logistics, payments) mean AI is an additive
+              layer, not their only bet.
+            </p>
+          </div>
+
+          <div className="story-block">
+            <h4>Why pure-play AI feels riskier</h4>
+            <p>
+              Palantir, C3.ai, UiPath, SoundHound, and similar specialists still
+              hinge on one or two AI products and future adoption curves. Their
+              higher P/S bands mirror the dot-com pattern: narrow focus, heavy
+              capital needs, and valuations priced for perfection. Some will
+              scale into platforms; others may get outpaced or commoditized.
+            </p>
+          </div>
+        </div>
+
+        <div className="story-footer">
+          Today&apos;s AI bubble sits on sturdier foundations—massive incumbents
+          with proven revenues—but the edges remain frothy where single-product
+          AI firms chase growth. The visualized P/S bands make the split clear:
+          a grounded core and speculative perimeter.
         </div>
       </div>
 
