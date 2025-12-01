@@ -194,6 +194,64 @@ button:active {
   margin-top: 28px;
 }
 
+.story-section {
+  margin-top: 26px;
+  display: grid;
+  gap: 12px;
+}
+
+.story-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 1024px) {
+  .story-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.story-copy p {
+  color: var(--muted);
+  margin: 0 0 12px;
+  line-height: 1.6;
+}
+
+.story-chart {
+  min-height: 520px;
+}
+
+.story-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.story-btn {
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: #e5e7eb;
+  padding: 8px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-weight: 700;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.story-btn.active {
+  background: linear-gradient(135deg, var(--accent), #6d28d9);
+  border-color: rgba(124, 58, 237, 0.55);
+  color: white;
+  box-shadow: 0 12px 30px rgba(124, 58, 237, 0.25);
+}
+
+.story-body {
+  margin-top: 6px;
+}
+
 .macro-layout {
   display: grid;
   grid-template-columns: minmax(260px, 1fr) 2fr;

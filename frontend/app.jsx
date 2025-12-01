@@ -819,6 +819,7 @@ function App() {
   const [macroZoom, setMacroZoom] = useState("AI Boom (2022–2025)");
   const [macroLoading, setMacroLoading] = useState(true);
   const [macroError, setMacroError] = useState("");
+  const [activeStory, setActiveStory] = useState("ps-trend");
 
   useEffect(() => {
     async function loadAll() {
@@ -1094,13 +1095,14 @@ function App() {
       <div className="hero">
         <div>
           <div className="tag">Dot-com vs AI · Valuation / Revenue</div>
-          <h1>Compare real P/S multiples across bubbles</h1>
+          <h1>Is there an AI bubble? Compare it to dot-com with data.</h1>
           <p>
-            These charts are generated directly from the CSV and Excel files in
-            this repo using the same transformation logic as the Python script.
-            The valuation cards mirror the original Matplotlib figures, and the
-            macro section ports the Streamlit macrodata dashboard (date ranges,
-            normalization, and zoom presets) into the React front end.
+            The story below pairs narrative with evidence so the visuals show
+            exactly what the text claims. We contrast the late-1990s dot-com
+            spike with today&apos;s AI surge, highlighting why diversified giants
+            (Microsoft, Amazon, Alphabet, Meta, NVIDIA, plus the rest of the Big
+            10 platform companies) are structurally safer than narrow pure-play
+            AI firms chasing future promise.
           </p>
           {loading && (
             <p
@@ -1161,6 +1163,142 @@ function App() {
               />
               Pure-play AI cohort
             </label>
+          </div>
+        </div>
+      </div>
+
+      <div className="story-section">
+        <div className="tag">Story first, visuals that back it up</div>
+        <h2 style={{ marginBottom: 10 }}>
+          The AI bubble exists, but it&apos;s built on stronger foundations
+        </h2>
+        <div className="story-grid">
+          <div className="card story-copy">
+            <p>
+              Dot-com valuations rocketed on top of single-product web ideas,
+              often with fragile business models. Today&apos;s AI excitement sits on
+              cash-generating platforms: Microsoft blends Office, Windows,
+              Azure, GitHub, and Xbox; Amazon marries e-commerce, logistics,
+              AWS, ads, and Prime; Alphabet pairs Search and YouTube with
+              Android, Maps, and Google Cloud; Meta runs global social graphs
+              while funding AR/VR; NVIDIA sells the GPUs and software stacks
+              that power gaming, cars, science, and AI training. That breadth
+              cushions any single shock.
+            </p>
+            <p>
+              Pure AI names (Palantir, C3.ai, UiPath, SoundHound, and peers)
+              look more like late-90s internet bets: narrower focus, fewer
+              moats, and valuations resting on what the future might bring.
+              Their Price-to-Sales multiples float higher and swing harder,
+              echoing bubble behavior even if they rarely hit the 200x–600x
+              extremes of 1999–2000. Meanwhile, Big Tech trades at more modest
+              5x–20x ranges because investors can underwrite dependable revenue
+              engines. The charts to the right only surface one at a time so the
+              visual evidence cleanly follows each point in the story.
+            </p>
+          </div>
+          <div className="card chart-card story-chart">
+            <div className="story-tabs">
+              <button
+                className={
+                  activeStory === "ps-trend" ? "story-btn active" : "story-btn"
+                }
+                onClick={() => setActiveStory("ps-trend")}
+              >
+                1 · Heat over time
+              </button>
+              <button
+                className={
+                  activeStory === "peaks" ? "story-btn active" : "story-btn"
+                }
+                onClick={() => setActiveStory("peaks")}
+              >
+                2 · Peak distributions
+              </button>
+              <button
+                className={
+                  activeStory === "scale" ? "story-btn active" : "story-btn"
+                }
+                onClick={() => setActiveStory("scale")}
+              >
+                3 · Scale vs. revenue
+              </button>
+              <button
+                className={
+                  activeStory === "median" ? "story-btn active" : "story-btn"
+                }
+                onClick={() => setActiveStory("median")}
+              >
+                4 · Typical peaks
+              </button>
+            </div>
+            <div className="story-body">
+              {!ready && !loading && (
+                <p style={{ color: "var(--muted)", marginTop: 6 }}>
+                  Waiting for data. Check that the CSV/XLSX files sit next to
+                  <code>frontend/index.html</code> when you host the page.
+                </p>
+              )}
+              {ready && activeStory === "ps-trend" && (
+                <>
+                  <p className="chart-subtitle">
+                    The line chart shows how dot-com P/S averages exploded
+                    earlier and steeper than AI. Big Tech&apos;s AI-era multiples
+                    rise, but the slope is gentler because diversified revenue
+                    holds the line.
+                  </p>
+                  <AvgPsLineChart
+                    dotcom={activeDotcom}
+                    aiPure={activeAiPure}
+                    aiNiche={activeAiBroad}
+                  />
+                </>
+              )}
+              {ready && activeStory === "peaks" && (
+                <>
+                  <p className="chart-subtitle">
+                    The boxplot contrasts peak windows: dot-com names cluster at
+                    ultra-high P/S, pure AI sits higher than Big Tech, but both
+                    remain far more grounded than 1999–2000 mania.
+                  </p>
+                  <PeakBoxplotChart
+                    dotLog={dotPeakLog}
+                    pureLog={aiPurePeakLog}
+                    nicheLog={aiBroadPeakLog}
+                  />
+                </>
+              )}
+              {ready && activeStory === "scale" && (
+                <>
+                  <p className="chart-subtitle">
+                    On the log–log scatter, Big Tech spreads across massive
+                    revenue bases with healthier market-cap alignment, while
+                    niche AI firms bunch at lower revenue with wider valuation
+                    swings—classic bubble shape.
+                  </p>
+                  <McRevScatterChart
+                    dotcom={activeDotcom}
+                    aiPure={activeAiPure}
+                    aiNiche={activeAiBroad}
+                  />
+                </>
+              )}
+              {ready && activeStory === "median" && (
+                <>
+                  <p className="chart-subtitle">
+                    Median P/S at the peak shows the cushion: diversified AI
+                    leaders stay closer to sustainable bands, while pure AI sits
+                    higher, signaling a bubble—but not the runaway dot-com
+                    extremes.
+                  </p>
+                  <MedianPsBarChart
+                    dotMed={dotMed}
+                    pureMed={pureMed}
+                    nicheMed={broadMed}
+                  />
+                </>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -1301,76 +1439,12 @@ function App() {
         </div>
       </div>
 
-      {ready ? (
-        <>
-          <div className="layout">
-            <div className="card chart-card">
-              <h3 style={{ marginTop: 0 }}>1. Average log P/S over time</h3>
-              <p className="chart-subtitle">
-                Mean valuation / revenue (P/S) for each cohort, transformed with
-                a natural log to make extreme ratios comparable.
-              </p>
-              <AvgPsLineChart
-                dotcom={activeDotcom}
-                aiPure={activeAiPure}
-                aiNiche={activeAiBroad}
-              />
-            </div>
-
-            <div className="card chart-card">
-              <h3 style={{ marginTop: 0 }}>
-                2. P/S distribution at bubble peaks
-              </h3>
-              <p className="chart-subtitle">
-                Boxplot-style view of log(P/S) at each cohort&apos;s bubble
-                window (Dot-com 1999–2000, AI 2023–2025).
-              </p>
-              <PeakBoxplotChart
-                dotLog={dotPeakLog}
-                pureLog={aiPurePeakLog}
-                nicheLog={aiBroadPeakLog}
-              />
-            </div>
-
-            <div className="card chart-card">
-              <h3 style={{ marginTop: 0 }}>
-                3. Log–log Market Cap vs Revenue by era
-              </h3>
-              <p className="chart-subtitle">
-                Each point is a company-year. Both axes are log-transformed to
-                show how valuations scaled relative to revenue in each regime.
-              </p>
-              <McRevScatterChart
-                dotcom={activeDotcom}
-                aiPure={activeAiPure}
-                aiNiche={activeAiBroad}
-              />
-            </div>
-
-            <div className="card chart-card">
-              <h3 style={{ marginTop: 0 }}>
-                4. Median log P/S at bubble peaks
-              </h3>
-              <p className="chart-subtitle">
-                Direct comparison of typical (median) valuation / revenue
-                multiples at the peak periods of each cohort.
-              </p>
-              <MedianPsBarChart
-                dotMed={dotMed}
-                pureMed={pureMed}
-                nicheMed={broadMed}
-              />
-            </div>
-          </div>
-        </>
-      ) : (
-        !loading && (
-          <p style={{ color: "var(--muted)", marginTop: 32 }}>
-            Waiting for data. Check that <code>Dotcom.csv</code>,{" "}
-            <code>PureAI.xlsx</code> and <code>HighTech.xlsx</code> sit next to
-            <code>frontend/index.html</code> when you host the page.
-          </p>
-        )
+      {!ready && !loading && (
+        <p style={{ color: "var(--muted)", marginTop: 32 }}>
+          Waiting for data. Check that <code>Dotcom.csv</code>, <code>PureAI.xlsx</code>
+          and <code>HighTech.xlsx</code> sit next to <code>frontend/index.html</code>
+          when you host the page.
+        </p>
       )}
     </div>
   );
