@@ -1,42 +1,101 @@
 const { useEffect, useRef, useState } = React;
 
 // ============================================================
-// 0. Data loading helpers (files live one level above /frontend)
+// 0. PATHS & THEME
 // ============================================================
+
+// All paths are relative to /frontend/index.html
+const DATA_PATHS = {
+  dotcom: "Dotcom.csv",          // lives in frontend/
+  bigTech: "HighTech.xlsx",      // lives in frontend/
+  pureAi: "PureAI.xlsx",         // lives in frontend/
+  macro: "../data/combined-macrodata.csv", // lives in data/
+};
+
+const THEME = {
+  text: "#94a3b8",
+  grid: "rgba(255, 255, 255, 0.06)",
+  tooltipBg: "rgba(15, 22, 41, 0.9)",
+  tooltipBorder: "rgba(255, 255, 255, 0.1)",
+};
+
+const SERIES_COLORS = {
+  dotcom: { solid: "#f472b6", fill: "rgba(244, 114, 182, 0.2)" },
+  bigTech: { solid: "#22c55e", fill: "rgba(34, 197, 94, 0.2)" },
+  pureAi: { solid: "#38bdf8", fill: "rgba(56, 189, 248, 0.2)" },
+};
+
+const MACRO_COLORS = [
+  "#a78bfa",
+  "#38bdf8",
+  "#34d399",
+  "#f472b6",
+  "#fbbf24",
+];
+
+const MACRO_COLUMNS = [
+  "Inflation",
+  "Unemployment",
+  "Interest Rate",
+  "GDP Yearly Growth",
+  "NASDAQ Yearly Growth",
+];
+
+// ============================================================
+// 1. Data loading helpers
+// ============================================================
+
+// Strip BOM + outer quotes from a CSV token
+function cleanCsvToken(s) {
+  if (s == null) return "";
+  let t = String(s).trim().replace(/^\uFEFF/, ""); // remove BOM if present
+  if (t.startsWith('"') && t.endsWith('"')) {
+    t = t.slice(1, -1);
+  }
+  return t;
+}
 
 async function loadCsvAsObjects(path) {
   const res = await fetch(path);
   if (!res.ok) {
+    console.error(`❌ Failed to load CSV at ${path}`, res.status, res.statusText);
     throw new Error(`Failed to load CSV: ${path}`);
   }
   const text = await res.text();
   const lines = text.trim().split(/\r?\n/);
-  const headers = lines[0].split(",").map((h) => h.trim());
-  return lines.slice(1).map((line) => {
-    const cells = line.split(",").map((c) => c.trim());
+  if (!lines.length) {
+    console.warn(`⚠️ CSV at ${path} is empty`);
+    return [];
+  }
+
+  const headers = lines[0].split(",").map((h) => cleanCsvToken(h));
+  const rows = lines.slice(1).map((line) => {
+    const cells = line.split(",").map((c) => cleanCsvToken(c));
     const row = {};
     headers.forEach((h, i) => {
       row[h] = cells[i] ?? "";
     });
     return row;
   });
+
+  console.log("First CSV row keys:", Object.keys(rows[0] || {}));
+  return rows;
 }
 
 async function loadExcelAsObjects(path) {
   const res = await fetch(path);
   if (!res.ok) {
+    console.error(`❌ Failed to load Excel at ${path}`, res.status, res.statusText);
     throw new Error(`Failed to load Excel: ${path}`);
   }
   const buffer = await res.arrayBuffer();
   const wb = XLSX.read(buffer);
   const sheet = wb.Sheets[wb.SheetNames[0]];
-  return XLSX.utils.sheet_to_json(sheet, { defval: "" });
+  const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+  return rows;
 }
 
-// ============================================================
-// 1. JS version of tidy_panel + helpers
-// ============================================================
-
+// Convert "Company/Metric/year columns" → tidy panel
 function tidyPanelJS(rows, years) {
   const records = [];
   let i = 0;
@@ -71,8 +130,51 @@ function tidyPanelJS(rows, years) {
   return records;
 }
 
+// CSV → panel with strong logging
+async function loadDotcomPanel() {
+  try {
+    const rows = await loadCsvAsObjects(DATA_PATHS.dotcom);
+    console.log(`✅ Loaded Dotcom.csv, raw rows: ${rows.length}`);
+
+    const panel = tidyPanelJS(rows, [1996, 1997, 1998, 1999, 2000]);
+    console.log(`✅ Tidy dot-com panel records: ${panel.length}`);
+
+    const usable = panel.filter((r) => r.ValRev != null && r.ValRev > 0);
+    if (!usable.length) {
+      console.warn(
+        "⚠️ Dot-com data loaded but no positive ValRev values found. " +
+          "Check that the CSV has a 'Valuation/Revenue' column with numeric values."
+      );
+    }
+    return panel;
+  } catch (e) {
+    console.error("❌ Dot-com panel failed to load:", e);
+    return [];
+  }
+}
+
+// Excel → panel with logging
+async function loadExcelPanel(path, years, label) {
+  try {
+    const rows = await loadExcelAsObjects(path);
+    console.log(`✅ Loaded ${label}, raw rows: ${rows.length}`);
+    const panel = tidyPanelJS(rows, years);
+    console.log(`✅ Tidy ${label} panel records: ${panel.length}`);
+    return panel;
+  } catch (e) {
+    console.error(`❌ Failed to load ${label}:`, e);
+    return [];
+  }
+}
+
+// ============================================================
+// 2. Valuation helpers
+// ============================================================
+
 function safeLogArray(values) {
-  return values.filter((v) => v != null && v > 0).map((v) => Math.log(v));
+  return values
+    .filter((v) => v != null && v > 0)
+    .map((v) => Math.log(v));
 }
 
 function groupAvgLogPsByYear(records) {
@@ -94,15 +196,16 @@ function groupAvgLogPsByYear(records) {
   return { years, logVals };
 }
 
-// simple percentile helper for boxplot
 function percentile(sortedArr, p) {
   if (!sortedArr.length) return null;
   const idx = (sortedArr.length - 1) * p;
   const lower = Math.floor(idx);
   const upper = Math.ceil(idx);
   if (lower === upper) return sortedArr[lower];
-  const frac = idx - lower;
-  return sortedArr[lower] * (1 - frac) + sortedArr[upper] * frac;
+  return (
+    sortedArr[lower] * (1 - (idx - lower)) +
+    sortedArr[upper] * (idx - lower)
+  );
 }
 
 function computeBoxStats(logValues) {
@@ -119,67 +222,43 @@ function computeBoxStats(logValues) {
   };
 }
 
-// median log P/S for given years (for bar chart)
 function medianLogPs(records, years) {
   const vals = records
     .filter((r) => years.includes(r.Year))
     .map((r) => r.ValRev)
     .filter((v) => v != null && v > 0);
+
   if (!vals.length) return null;
-  const sorted = vals.sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
+  vals.sort((a, b) => a - b);
+  const mid = Math.floor(vals.length / 2);
   const median =
-    sorted.length % 2 === 0
-      ? (sorted[mid - 1] + sorted[mid]) / 2
-      : sorted[mid];
+    vals.length % 2 === 0 ? (vals[mid - 1] + vals[mid]) / 2 : vals[mid];
   return Math.log(median);
 }
 
 // ============================================================
-// 1b. Macro data helpers (port of macrodata-frontend.py)
+// 3. Macro helpers
 // ============================================================
-
-const MACRO_COLUMNS = [
-  "Inflation",
-  "Unemployment",
-  "Interest Rate",
-  "GDP Yearly Growth",
-  "NASDAQ Yearly Growth",
-];
-
-const MACRO_COLORS = [
-  "#22c55e",
-  "#38bdf8",
-  "#f59e0b",
-  "#a855f7",
-  "#14b8a6",
-];
-
-const SERIES_COLORS = {
-  dotcom: { solid: "#38bdf8", fill: "rgba(56,189,248,0.2)" },
-  bigTech: { solid: "#22c55e", fill: "rgba(34,197,94,0.2)" },
-  pureAi: { solid: "#f97316", fill: "rgba(249,115,22,0.22)" },
-};
 
 function parseMacroCsv(text) {
   const lines = text.trim().split(/\r?\n/);
   if (!lines.length) return [];
 
-  const rawHeaders = lines[0].split(",").map((h) => h.trim());
+  const rawHeaders = lines[0].split(",").map((h) => cleanCsvToken(h));
   const headers = rawHeaders.map((h) =>
     h === "NASDAQ Yearly Growith" ? "NASDAQ Yearly Growth" : h
   );
 
   const rows = lines.slice(1).map((line) => {
-    const cells = line.split(",").map((c) => c.trim());
+    const cells = line.split(",").map((c) => cleanCsvToken(c));
     const row = {};
     headers.forEach((h, i) => {
-      const value = cells[i];
+      const cell = cells[i];
       if (h === "Date") {
-        const parsed = new Date(value);
-        row.Date = Number.isNaN(parsed.getTime()) ? null : parsed;
+        const d = new Date(cell);
+        row.Date = Number.isNaN(d.getTime()) ? null : d;
       } else {
-        const num = Number(value);
+        const num = Number(cell);
         row[h] = Number.isFinite(num) ? num : null;
       }
     });
@@ -191,47 +270,34 @@ function parseMacroCsv(text) {
   );
   valid.sort((a, b) => a.Date - b.Date);
 
-  // De-duplicate by date (keep the last occurrence, matching the Python version)
   const deduped = new Map();
-  valid.forEach((r) => {
-    const key = r.Date.toISOString();
-    deduped.set(key, r);
-  });
-
+  valid.forEach((r) => deduped.set(r.Date.toISOString(), r));
   return Array.from(deduped.values());
 }
 
-async function loadMacrodata(paths) {
-  for (const path of paths) {
-    try {
-      const res = await fetch(path);
-      if (!res.ok) continue;
-      const text = await res.text();
-      const parsed = parseMacroCsv(text);
-      if (parsed.length) return parsed;
-    } catch (e) {
-      console.warn("Macrodata fetch failed for", path, e);
+async function loadMacrodata() {
+  try {
+    const res = await fetch(DATA_PATHS.macro);
+    if (!res.ok) {
+      console.error(
+        `❌ Failed to load macro CSV at ${DATA_PATHS.macro}`,
+        res.status,
+        res.statusText
+      );
+      throw new Error("Macro CSV load failed");
     }
+    const text = await res.text();
+    const parsed = parseMacroCsv(text);
+    console.log(`✅ Macro rows: ${parsed.length}`);
+    return parsed;
+  } catch (e) {
+    console.error("❌ Macro dataset failed to load:", e);
+    return [];
   }
-  throw new Error("Unable to load macro dataset from any known path.");
-}
-
-function getMacroColumns(rows) {
-  if (!rows.length) return [];
-  return MACRO_COLUMNS.filter((c) => c in rows[0]);
-}
-
-function filterMacroByRange(rows, startIdx, endIdx) {
-  return rows.slice(startIdx, endIdx + 1);
-}
-
-function filterMacroByDate(rows, startDate, endDate) {
-  return rows.filter((r) => r.Date >= startDate && r.Date <= endDate);
 }
 
 function normalizeMacro(rows, columns, method, referenceRows) {
   if (method === "None") return rows;
-
   const ref = referenceRows && referenceRows.length ? referenceRows : rows;
   const stats = {};
 
@@ -242,12 +308,15 @@ function normalizeMacro(rows, columns, method, referenceRows) {
     });
   } else if (method === "Z-score (standardize)") {
     columns.forEach((col) => {
-      const values = ref.map((r) => r[col]).filter((v) => v != null);
-      const mean = values.reduce((s, v) => s + v, 0) / (values.length || 1);
+      const values = ref
+        .map((r) => r[col])
+        .filter((v) => v != null);
+      const mean =
+        values.reduce((s, v) => s + v, 0) / (values.length || 1);
       const variance =
-        values.reduce((s, v) => s + (v - mean) ** 2, 0) / (values.length || 1);
-      const std = Math.sqrt(variance);
-      stats[col] = { mean, std };
+        values.reduce((s, v) => s + (v - mean) ** 2, 0) /
+        (values.length || 1);
+      stats[col] = { mean, std: Math.sqrt(variance) };
     });
   }
 
@@ -259,7 +328,6 @@ function normalizeMacro(rows, columns, method, referenceRows) {
         next[col] = null;
         return;
       }
-
       if (method === "Index to 100") {
         const base = stats[col].base;
         next[col] = base && base !== 0 ? (val / base) * 100 : null;
@@ -276,54 +344,58 @@ function formatDateLabel(date) {
   return new Intl.DateTimeFormat("en", {
     year: "numeric",
     month: "short",
-    day: "numeric",
   }).format(date);
 }
 
 // ============================================================
-// 2. Generic Chart hook
+// 4. Chart glue
 // ============================================================
+
+Chart.defaults.font.family = "'Inter', system-ui, sans-serif";
+Chart.defaults.color = THEME.text;
+Chart.defaults.borderColor = THEME.grid;
 
 function useChart(canvasRef, configFactory, deps) {
   const chartRef = useRef(null);
 
   useEffect(() => {
     if (!canvasRef.current) return;
-    if (chartRef.current) chartRef.current.destroy();
+
+    if (chartRef.current) {
+      chartRef.current.destroy();
+    }
 
     const ctx = canvasRef.current.getContext("2d");
     const config = configFactory(ctx);
     chartRef.current = new Chart(ctx, config);
 
-    return () => chartRef.current && chartRef.current.destroy();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => {
+      if (chartRef.current) {
+        chartRef.current.destroy();
+      }
+    };
   }, deps);
 }
 
-// ============================================================
-// 3. Individual chart components
-// ============================================================
+// ================== Story charts ============================
 
-// 3.1 Line: log average P/S by era
-function AvgPsLineChart({ dotcom, aiPure, aiNiche }) {
+function AvgPsLineChart({ dotcom, aiPure, aiBroad }) {
   const canvasRef = useRef(null);
 
   const dot = groupAvgLogPsByYear(dotcom);
   const pure = groupAvgLogPsByYear(aiPure);
-  const niche = groupAvgLogPsByYear(aiNiche);
+  const broad = groupAvgLogPsByYear(aiBroad);
 
   const allYears = Array.from(
-    new Set([...dot.years, ...pure.years, ...niche.years])
+    new Set([...dot.years, ...pure.years, ...broad.years])
   ).sort((a, b) => a - b);
 
   const align = (series) => {
-    const map = new Map(series.years.map((y, i) => [y, series.logVals[i]]));
-    return allYears.map((y) => (map.has(y) ? map.get(y) : null));
+    const map = new Map(
+      series.years.map((y, i) => [y, series.logVals[i]])
+    );
+    return allYears.map((y) => map.get(y) ?? null);
   };
-
-  const dotData = align(dot);
-  const pureData = align(pure);
-  const nicheData = align(niche);
 
   useChart(
     canvasRef,
@@ -333,34 +405,34 @@ function AvgPsLineChart({ dotcom, aiPure, aiNiche }) {
         labels: allYears,
         datasets: [
           {
-            label: "Dot-com (avg log P/S)",
-            data: dotData,
+            label: "Dot-com",
+            data: align(dot),
             borderColor: SERIES_COLORS.dotcom.solid,
             backgroundColor: SERIES_COLORS.dotcom.fill,
             tension: 0.3,
             borderWidth: 3,
             pointRadius: 3,
-            spanGaps: true,
+            pointHoverRadius: 6,
           },
           {
-            label: "Big Tech AI (avg log P/S)",
-            data: pureData,
+            label: "Big Tech AI",
+            data: align(pure),
             borderColor: SERIES_COLORS.bigTech.solid,
             backgroundColor: SERIES_COLORS.bigTech.fill,
             tension: 0.3,
             borderWidth: 3,
             pointRadius: 3,
-            spanGaps: true,
+            pointHoverRadius: 6,
           },
           {
-            label: "Pure-play AI (avg log P/S)",
-            data: nicheData,
+            label: "Pure-play AI",
+            data: align(broad),
             borderColor: SERIES_COLORS.pureAi.solid,
             backgroundColor: SERIES_COLORS.pureAi.fill,
             tension: 0.3,
             borderWidth: 3,
             pointRadius: 3,
-            spanGaps: true,
+            pointHoverRadius: 6,
           },
         ],
       },
@@ -369,133 +441,115 @@ function AvgPsLineChart({ dotcom, aiPure, aiNiche }) {
         maintainAspectRatio: false,
         interaction: { mode: "index", intersect: false },
         plugins: {
-          legend: {
-            position: "top",
-            labels: { color: "#e5e7eb", usePointStyle: true },
-          },
+          legend: { labels: { usePointStyle: true, boxWidth: 6 } },
           tooltip: {
-            backgroundColor: "#020617",
-            borderColor: "#1f2937",
+            backgroundColor: THEME.tooltipBg,
+            titleColor: "#fff",
+            bodyColor: "#cbd5e1",
+            borderColor: THEME.tooltipBorder,
             borderWidth: 1,
             padding: 10,
             callbacks: {
-              label: (ctx) => {
-                const logVal = ctx.raw;
-                if (logVal == null) return `${ctx.dataset.label}: n/a`;
-                const ps = Math.exp(logVal);
-                return `${ctx.dataset.label}: log(P/S)=${logVal.toFixed(
-                  2
-                )},  P/S≈${ps.toFixed(1)}×`;
-              },
+              label: (c) =>
+                `${c.dataset.label}: ${Math.exp(c.raw).toFixed(1)}x P/S`,
             },
           },
         },
         scales: {
-          x: {
-            title: { display: true, text: "Year", color: "#cbd5e1" },
-            ticks: { color: "#cbd5e1" },
-            grid: { color: "rgba(148,163,184,0.15)" },
-          },
+          x: { grid: { display: false } },
           y: {
             title: {
               display: true,
               text: "log(Valuation / Revenue)",
-              color: "#cbd5e1",
             },
-            ticks: { color: "#cbd5e1" },
-            grid: { color: "rgba(148,163,184,0.15)" },
           },
         },
       },
     }),
-    [
-      JSON.stringify(allYears),
-      JSON.stringify(dotData),
-      JSON.stringify(pureData),
-      JSON.stringify(nicheData),
-    ]
+    [JSON.stringify(allYears), dotcom.length, aiPure.length, aiBroad.length]
   );
 
-  return <canvas ref={canvasRef} height="340" />;
+  return <canvas ref={canvasRef} />;
 }
 
-// 3.2 Custom boxplot (drawn on top of a dummy bar chart)
-function PeakBoxplotChart({ dotLog, pureLog, nicheLog }) {
+function PeakBoxplotChart({ dotLog, pureLog, broadLog }) {
   const canvasRef = useRef(null);
-
-  const labels = ["Dot-com peak", "Big Tech AI peak", "Pure AI peak"];
-  const stats = [
+  const realStats = [
     computeBoxStats(dotLog),
     computeBoxStats(pureLog),
-    computeBoxStats(nicheLog),
+    computeBoxStats(broadLog),
   ];
 
   useChart(
     canvasRef,
     (ctx) => {
-      const data = {
-        labels,
-        datasets: [
-          {
-            // invisible bars – we draw boxplots with a plugin
-            label: "P/S distribution (log)",
-            data: stats.map((s) => s.median ?? null),
-            backgroundColor: "rgba(15,23,42,0.0)",
-            borderWidth: 0,
-          },
-        ],
-      };
-
       const boxplotPlugin = {
         id: "customBoxplot",
         afterDatasetsDraw(chart) {
-          const { ctx, chartArea } = chart;
+          const { ctx } = chart;
           ctx.save();
-          ctx.strokeStyle = "#cbd5e1";
-          ctx.fillStyle = "rgba(148,163,184,0.2)";
           ctx.lineWidth = 2;
 
           chart.getDatasetMeta(0).data.forEach((bar, idx) => {
-            const stat = stats[idx];
+            const stat = realStats[idx];
             if (!stat || stat.median == null) return;
 
             const x = bar.x;
             const yScale = chart.scales.y;
-
             const yMin = yScale.getPixelForValue(stat.min);
             const yQ1 = yScale.getPixelForValue(stat.q1);
             const yMed = yScale.getPixelForValue(stat.median);
             const yQ3 = yScale.getPixelForValue(stat.q3);
             const yMax = yScale.getPixelForValue(stat.max);
+            const w = 40;
 
-            const boxWidth = 40;
+            const color =
+              idx === 0
+                ? SERIES_COLORS.dotcom.solid
+                : idx === 1
+                ? SERIES_COLORS.bigTech.solid
+                : SERIES_COLORS.pureAi.solid;
+            const fill =
+              idx === 0
+                ? SERIES_COLORS.dotcom.fill
+                : idx === 1
+                ? SERIES_COLORS.bigTech.fill
+                : SERIES_COLORS.pureAi.fill;
+
+            ctx.strokeStyle = color;
+            ctx.fillStyle = fill;
 
             // whiskers
             ctx.beginPath();
             ctx.moveTo(x, yMin);
             ctx.lineTo(x, yQ1);
+            ctx.stroke();
+
+            ctx.beginPath();
             ctx.moveTo(x, yQ3);
             ctx.lineTo(x, yMax);
             ctx.stroke();
 
-            // whisker caps
             ctx.beginPath();
-            ctx.moveTo(x - boxWidth / 4, yMin);
-            ctx.lineTo(x + boxWidth / 4, yMin);
-            ctx.moveTo(x - boxWidth / 4, yMax);
-            ctx.lineTo(x + boxWidth / 4, yMax);
+            ctx.moveTo(x - w / 4, yMin);
+            ctx.lineTo(x + w / 4, yMin);
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.moveTo(x - w / 4, yMax);
+            ctx.lineTo(x + w / 4, yMax);
             ctx.stroke();
 
             // box
             ctx.beginPath();
-            ctx.rect(x - boxWidth / 2, yQ3, boxWidth, yQ1 - yQ3);
+            ctx.rect(x - w / 2, yQ3, w, yQ1 - yQ3);
             ctx.fill();
             ctx.stroke();
 
-            // median line
+            // median
             ctx.beginPath();
-            ctx.moveTo(x - boxWidth / 2, yMed);
-            ctx.lineTo(x + boxWidth / 2, yMed);
+            ctx.moveTo(x - w / 2, yMed);
+            ctx.lineTo(x + w / 2, yMed);
             ctx.stroke();
           });
 
@@ -505,61 +559,41 @@ function PeakBoxplotChart({ dotLog, pureLog, nicheLog }) {
 
       return {
         type: "bar",
-        data,
+        data: {
+          labels: ["Dot-com Peak", "Big Tech AI Peak", "Pure AI Peak"],
+          datasets: [
+            {
+              label: "Hidden",
+              data: realStats.map((s) => s.median),
+              backgroundColor: "transparent",
+              borderWidth: 0,
+            },
+          ],
+        },
         plugins: [boxplotPlugin],
         options: {
           responsive: true,
           maintainAspectRatio: false,
           plugins: {
             legend: { display: false },
-            tooltip: {
-              backgroundColor: "#020617",
-              borderColor: "#1f2937",
-              borderWidth: 1,
-              padding: 10,
-              callbacks: {
-                label: (ctx) => {
-                  const stat = stats[ctx.dataIndex];
-                  if (!stat || stat.median == null) return "No data";
-                  const toText = (v) =>
-                    `log=${v.toFixed(2)},  P/S≈${Math.exp(v).toFixed(1)}×`;
-                  return [
-                    `min:   ${toText(stat.min)}`,
-                    `Q1:    ${toText(stat.q1)}`,
-                    `median:${toText(stat.median)}`,
-                    `Q3:    ${toText(stat.q3)}`,
-                    `max:   ${toText(stat.max)}`,
-                  ];
-                },
-              },
-            },
+            tooltip: { enabled: false },
           },
           scales: {
-            x: {
-              ticks: { color: "#cbd5e1" },
-              grid: { display: false },
-            },
+            x: { grid: { display: false } },
             y: {
-              title: {
-                display: true,
-                text: "log(Valuation / Revenue)",
-                color: "#cbd5e1",
-              },
-              ticks: { color: "#cbd5e1" },
-              grid: { color: "rgba(148,163,184,0.15)" },
+              title: { display: true, text: "log(P/S Distribution)" },
             },
           },
         },
       };
     },
-    [JSON.stringify(stats)]
+    [JSON.stringify(realStats)]
   );
 
-  return <canvas ref={canvasRef} height="340" />;
+  return <canvas ref={canvasRef} />;
 }
 
-// 3.3 Scatter: log–log Market Cap vs Revenue
-function McRevScatterChart({ dotcom, aiPure, aiNiche }) {
+function McRevScatterChart({ dotcom, aiPure, aiBroad }) {
   const canvasRef = useRef(null);
 
   const makePoints = (records) =>
@@ -570,10 +604,6 @@ function McRevScatterChart({ dotcom, aiPure, aiNiche }) {
         y: Math.log(r.MarketCap),
       }));
 
-  const dotPts = makePoints(dotcom);
-  const purePts = makePoints(aiPure);
-  const nichePts = makePoints(aiNiche);
-
   useChart(
     canvasRef,
     () => ({
@@ -581,33 +611,31 @@ function McRevScatterChart({ dotcom, aiPure, aiNiche }) {
       data: {
         datasets: [
           {
-            label: "Dot-com (log-log)",
-            data: dotPts,
+            label: "Dot-com",
+            data: makePoints(dotcom),
             backgroundColor: SERIES_COLORS.dotcom.fill,
             borderColor: SERIES_COLORS.dotcom.solid,
-            pointRadius: 4,
-            pointStyle: "crossRot",
-            pointBorderWidth: 1.4,
-          },
-          {
-            label: "Big Tech AI (log-log)",
-            data: purePts,
-            backgroundColor: SERIES_COLORS.bigTech.fill,
-            borderColor: SERIES_COLORS.bigTech.solid,
+            borderWidth: 1,
             pointRadius: 4,
             pointHoverRadius: 6,
-            pointStyle: "circle",
-            pointBorderWidth: 1.2,
           },
           {
-            label: "Pure-play AI (log-log)",
-            data: nichePts,
+            label: "Big Tech AI",
+            data: makePoints(aiPure),
+            backgroundColor: SERIES_COLORS.bigTech.fill,
+            borderColor: SERIES_COLORS.bigTech.solid,
+            borderWidth: 1,
+            pointRadius: 4,
+            pointHoverRadius: 6,
+          },
+          {
+            label: "Pure-play AI",
+            data: makePoints(aiBroad),
             backgroundColor: SERIES_COLORS.pureAi.fill,
             borderColor: SERIES_COLORS.pureAi.solid,
-            borderWidth: 1.6,
-            pointRadius: 5,
-            pointHoverRadius: 7,
-            pointStyle: "triangle",
+            borderWidth: 1,
+            pointRadius: 4,
+            pointHoverRadius: 6,
           },
         ],
       },
@@ -615,62 +643,60 @@ function McRevScatterChart({ dotcom, aiPure, aiNiche }) {
         responsive: true,
         maintainAspectRatio: false,
         plugins: {
-          legend: { position: "top", labels: { color: "#e5e7eb" } },
+          legend: { labels: { usePointStyle: true } },
           tooltip: {
-            backgroundColor: "#020617",
-            borderColor: "#1f2937",
+            backgroundColor: THEME.tooltipBg,
+            borderColor: THEME.tooltipBorder,
             borderWidth: 1,
-            padding: 10,
             callbacks: {
-              label: (ctx) =>
-                `${ctx.dataset.label}: log(Rev)=${ctx.raw.x.toFixed(
+              label: (c) =>
+                `${c.dataset.label}: log(Rev)=${c.raw.x.toFixed(
                   2
-                )}, log(MktCap)=${ctx.raw.y.toFixed(2)}`,
+                )}, log(MC)=${c.raw.y.toFixed(2)}`,
             },
           },
         },
         scales: {
           x: {
-            title: { display: true, text: "log(Revenue)", color: "#cbd5e1" },
-            ticks: { color: "#cbd5e1" },
-            grid: { color: "rgba(148,163,184,0.15)" },
+            title: { display: true, text: "log(Revenue)" },
+            grid: { display: false },
           },
           y: {
-            title: { display: true, text: "log(Market Cap)", color: "#cbd5e1" },
-            ticks: { color: "#cbd5e1" },
-            grid: { color: "rgba(148,163,184,0.15)" },
+            title: { display: true, text: "log(Market Cap)" },
           },
         },
       },
     }),
-    [JSON.stringify(dotPts), JSON.stringify(purePts), JSON.stringify(nichePts)]
+    [dotcom.length, aiPure.length, aiBroad.length]
   );
 
-  return <canvas ref={canvasRef} height="340" />;
+  return <canvas ref={canvasRef} />;
 }
 
-// 3.4 Bar: log median P/S by era at peaks
-function MedianPsBarChart({ dotMed, pureMed, nicheMed }) {
+function MedianPsBarChart({ dotMed, pureMed, broadMed }) {
   const canvasRef = useRef(null);
-
-  const labels = ["Dot-com peak", "Big Tech AI peak", "Pure AI peak"];
-  const values = [dotMed, pureMed, nicheMed];
 
   useChart(
     canvasRef,
     () => ({
       type: "bar",
       data: {
-        labels,
+        labels: ["Dot-com Peak", "Big Tech AI Peak", "Pure AI Peak"],
         datasets: [
           {
-            label: "Median log(P/S) at peaks",
-            data: values,
+            label: "Median log(P/S)",
+            data: [dotMed, pureMed, broadMed],
             backgroundColor: [
               SERIES_COLORS.dotcom.fill,
               SERIES_COLORS.bigTech.fill,
               SERIES_COLORS.pureAi.fill,
             ],
+            borderColor: [
+              SERIES_COLORS.dotcom.solid,
+              SERIES_COLORS.bigTech.solid,
+              SERIES_COLORS.pureAi.solid,
+            ],
+            borderWidth: 2,
             borderRadius: 8,
           },
         ],
@@ -678,48 +704,24 @@ function MedianPsBarChart({ dotMed, pureMed, nicheMed }) {
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            backgroundColor: "#020617",
-            borderColor: "#1f2937",
-            borderWidth: 1,
-            padding: 10,
-            callbacks: {
-              label: (ctx) => {
-                const logVal = ctx.raw;
-                if (logVal == null) return "n/a";
-                const ps = Math.exp(logVal);
-                return `log(P/S)=${logVal.toFixed(2)},  P/S≈${ps.toFixed(1)}×`;
-              },
-            },
-          },
-        },
+        plugins: { legend: { display: false } },
         scales: {
-          x: {
-            ticks: { color: "#cbd5e1" },
-            grid: { display: false },
-          },
+          x: { grid: { display: false } },
           y: {
-            title: {
-              display: true,
-              text: "log(Median Valuation / Revenue)",
-              color: "#cbd5e1",
-            },
-            ticks: { color: "#cbd5e1" },
-            grid: { color: "rgba(148,163,184,0.15)" },
+            title: { display: true, text: "Median log(P/S)" },
           },
         },
       },
     }),
-    [JSON.stringify(values)]
+    [dotMed, pureMed, broadMed]
   );
 
-  return <canvas ref={canvasRef} height="320" />;
+  return <canvas ref={canvasRef} />;
 }
 
-// 3.5 Macro time-series chart (main + zoom)
-function MacroLineChart({ series, yTitle, height = 420 }) {
+// ================== Macro chart ============================
+
+function MacroLineChart({ series, yTitle }) {
   const canvasRef = useRef(null);
 
   useChart(
@@ -730,56 +732,33 @@ function MacroLineChart({ series, yTitle, height = 420 }) {
         datasets: series.map((s, idx) => ({
           label: s.label,
           data: s.data,
-          parsing: false,
-          spanGaps: true,
-          tension: 0.25,
-          borderWidth: 3,
-          pointRadius: 0,
           borderColor: s.color || MACRO_COLORS[idx % MACRO_COLORS.length],
-          backgroundColor: (s.color || MACRO_COLORS[idx % MACRO_COLORS.length]) + "55",
+          backgroundColor:
+            (s.color || MACRO_COLORS[idx % MACRO_COLORS.length]) + "20",
+          tension: 0.3,
+          pointRadius: 0,
+          borderWidth: 2,
+          fill: false,
         })),
       },
-      plugins: [
-        {
-          id: "macroHoverLine",
-          afterDatasetsDraw(chart) {
-            const { ctx } = chart;
-            const active = chart.tooltip?.getActiveElements?.();
-            if (!active || !active.length) return;
-            const x = active[0].element.x;
-            ctx.save();
-            ctx.strokeStyle = "rgba(148,163,184,0.45)";
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(x, chart.scales.y.top);
-            ctx.lineTo(x, chart.scales.y.bottom);
-            ctx.stroke();
-            ctx.restore();
-          },
-        },
-      ],
       options: {
         responsive: true,
         maintainAspectRatio: false,
         interaction: { mode: "index", intersect: false },
         plugins: {
-          legend: { position: "top", labels: { color: "#e5e7eb" } },
+          legend: {
+            position: "top",
+            labels: { usePointStyle: true, boxWidth: 6 },
+          },
           tooltip: {
-            backgroundColor: "#020617",
-            borderColor: "#1f2937",
+            backgroundColor: THEME.tooltipBg,
+            borderColor: THEME.tooltipBorder,
             borderWidth: 1,
-            padding: 10,
             callbacks: {
               title: (items) =>
-                items?.length ? formatDateLabel(new Date(items[0].raw.x)) : "",
-              label: (ctx) => {
-                const val = ctx.raw.y;
-                const original = ctx.raw.original;
-                const normText = val == null ? "n/a" : val.toFixed(2);
-                const origText =
-                  original == null ? "n/a" : original.toLocaleString(undefined, { maximumFractionDigits: 2 });
-                return `${ctx.dataset.label}: ${normText} (actual ${origText})`;
-              },
+                items[0]
+                  ? formatDateLabel(new Date(items[0].raw.x))
+                  : "",
             },
           },
         },
@@ -787,16 +766,13 @@ function MacroLineChart({ series, yTitle, height = 420 }) {
           x: {
             type: "linear",
             ticks: {
-              color: "#cbd5e1",
-              callback: (value) => formatDateLabel(new Date(value)),
+              callback: (v) => formatDateLabel(new Date(v)),
               maxTicksLimit: 8,
             },
-            grid: { color: "rgba(148,163,184,0.12)" },
+            grid: { display: false },
           },
           y: {
-            title: { display: true, text: yTitle, color: "#cbd5e1" },
-            ticks: { color: "#cbd5e1" },
-            grid: { color: "rgba(148,163,184,0.15)" },
+            title: { display: true, text: yTitle },
           },
         },
       },
@@ -804,176 +780,86 @@ function MacroLineChart({ series, yTitle, height = 420 }) {
     [JSON.stringify(series), yTitle]
   );
 
-  return <canvas ref={canvasRef} height={height} />;
+  return <canvas ref={canvasRef} />;
 }
 
 // ============================================================
-// 4. Main App – only the four charts from Python
+// 5. Main Application
 // ============================================================
 
 function App() {
   const [dotcom, setDotcom] = useState([]);
-  const [aiBroad, setAiBroad] = useState([]); // Pure-play AI (PureAI.xlsx)
-  const [aiPure, setAiPure] = useState([]);   // Big Tech AI (HighTech.xlsx)
+  const [aiBroad, setAiBroad] = useState([]);
+  const [aiPure, setAiPure] = useState([]);
+  const [macroRows, setMacroRows] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [usedFallback, setUsedFallback] = useState(false);
+  const [usingFallback, setUsingFallback] = useState(false);
+
   const [cohortToggles, setCohortToggles] = useState({
     dotcom: true,
     aiPure: true,
     aiBroad: true,
   });
-  const [macroRows, setMacroRows] = useState([]);
-  const [macroColumns, setMacroColumns] = useState([]);
+  const [activeStory, setActiveStory] = useState("ps-trend");
+
+  const [macroColsState, setMacroColumns] = useState([]);
   const [macroSelection, setMacroSelection] = useState({});
   const [macroRange, setMacroRange] = useState([0, 0]);
   const [macroNormalization, setMacroNormalization] = useState(
     "Z-score (standardize)"
   );
   const [macroZoom, setMacroZoom] = useState("AI Boom (2022–2025)");
-  const [macroLoading, setMacroLoading] = useState(true);
-  const [macroError, setMacroError] = useState("");
-  const [activeStory, setActiveStory] = useState("ps-trend");
 
   useEffect(() => {
-    async function loadAll() {
-      let dotRows = [];
-      let pureRows = [];
-      let highTechRows = [];
-
+    async function init() {
+      setLoading(true);
       try {
-        setLoading(true);
-        setError("");
-        setUsedFallback(false);
+        const [dotPanel, purePanel, broadPanel, mRows] = await Promise.all([
+          loadDotcomPanel(),
+          loadExcelPanel(
+            DATA_PATHS.bigTech,
+            [2020, 2021, 2022, 2023, 2024, 2025],
+            "HighTech.xlsx (Big Tech AI)"
+          ),
+          loadExcelPanel(
+            DATA_PATHS.pureAi,
+            [2020, 2021, 2022, 2023, 2024, 2025],
+            "PureAI.xlsx (Pure-play AI)"
+          ),
+          loadMacrodata(),
+        ]);
 
-        // Data files live alongside index.html in /frontend for easy hosting
-        dotRows = await loadCsvAsObjects("./Dotcom.csv");
-        pureRows = await loadExcelAsObjects("./PureAI.xlsx");
-        highTechRows = await loadExcelAsObjects("./HighTech.xlsx");
+        if (dotPanel.length) setDotcom(dotPanel);
+        if (purePanel.length) setAiPure(purePanel);
+        if (broadPanel.length) setAiBroad(broadPanel);
+
+        if (!dotPanel.length || !purePanel.length || !broadPanel.length) {
+          setUsingFallback(true);
+        }
+
+        if (mRows && mRows.length) {
+          const mCols = MACRO_COLUMNS.filter((c) => c in mRows[0]);
+          setMacroRows(mRows);
+          setMacroColumns(mCols);
+          setMacroSelection(
+            mCols.reduce((acc, c) => ({ ...acc, [c]: true }), {})
+          );
+          setMacroRange([0, Math.max(mRows.length - 1, 0)]);
+        }
       } catch (e) {
-        console.error(e);
-        setError(
-          (e && e.message ? `${e.message}. ` : "") +
-            "Falling back to the embedded copies of the datasets."
-        );
-      }
-
-      let dotTidy = [];
-      let pureTidy = [];
-      let highTechTidy = [];
-
-      try {
-        if (dotRows.length) {
-          dotTidy = tidyPanelJS(dotRows, [1996, 1997, 1998, 1999, 2000]);
-        }
-        if (pureRows.length) {
-          pureTidy = tidyPanelJS(pureRows, [2020, 2021, 2022, 2023, 2024, 2025]);
-        }
-        if (highTechRows.length) {
-          highTechTidy = tidyPanelJS(highTechRows, [2020, 2021, 2022, 2023, 2024, 2025]);
-        }
-      } catch (parseErr) {
-        console.error(parseErr);
-        setError(
-          "Ran into an issue parsing the uploaded spreadsheets; showing the embedded data instead."
-        );
-      }
-
-      if (
-        (!dotTidy.length || !pureTidy.length || !highTechTidy.length) &&
-        window.EMBEDDED_TIDY
-      ) {
-        dotTidy = window.EMBEDDED_TIDY.dotcom || [];
-        pureTidy = window.EMBEDDED_TIDY.pureAi || [];
-        highTechTidy = window.EMBEDDED_TIDY.highTech || [];
-        setUsedFallback(true);
-      }
-
-      setDotcom(dotTidy);
-      setAiBroad(pureTidy);
-      setAiPure(highTechTidy);
-      setLoading(false);
-    }
-
-    loadAll();
-  }, []);
-
-  useEffect(() => {
-    async function loadMacro() {
-      try {
-        setMacroLoading(true);
-        setMacroError("");
-        // The macro CSV lives in /data/combined-macrodata.csv at the repo root.
-        // Try both relative and absolute paths so it works whether the site is
-        // hosted from /frontend or from the repo root.
-        const paths = [
-          "../data/combined-macrodata.csv",
-          "./data/combined-macrodata.csv",
-          "data/combined-macrodata.csv",
-          "/data/combined-macrodata.csv",
-        ];
-        const rows = await loadMacrodata(paths);
-        const cols = getMacroColumns(rows);
-        const selection = cols.reduce((acc, c) => ({ ...acc, [c]: true }), {});
-        setMacroRows(rows);
-        setMacroColumns(cols);
-        setMacroSelection(selection);
-        setMacroRange([0, Math.max(rows.length - 1, 0)]);
-      } catch (e) {
-        console.error(e);
-        setMacroError(
-          (e && e.message ? e.message : "") +
-            " Unable to load macro dataset from the data directory (data/combined-macrodata.csv)."
-        );
+        console.error("Data load failed:", e);
       } finally {
-        setMacroLoading(false);
+        setLoading(false);
       }
     }
 
-    loadMacro();
+    init();
   }, []);
-
-  useEffect(() => {
-    if (!macroRows.length) return;
-    setMacroRange(([start, end]) => {
-      const maxIdx = macroRows.length - 1;
-      const safeStart = Math.max(0, Math.min(start, maxIdx));
-      const safeEnd = Math.max(safeStart, Math.min(end, maxIdx));
-      return [safeStart, safeEnd];
-    });
-  }, [macroRows.length]);
-
-  const ready = !loading && (dotcom.length || aiBroad.length || aiPure.length);
-
-  const macroSelected = macroColumns.filter((c) => macroSelection[c]);
-  const macroFiltered =
-    macroRows.length && macroRange[1] >= macroRange[0]
-      ? filterMacroByRange(macroRows, macroRange[0], macroRange[1])
-      : [];
-  const macroReference =
-    macroNormalization.startsWith("Z-score") && macroRows.length
-      ? macroRows
-      : macroFiltered;
-
-  const macroNormalized = normalizeMacro(
-    macroFiltered,
-    macroSelected,
-    macroNormalization,
-    macroReference
-  );
-
-  const macroYTitle =
-    macroNormalization === "Index to 100"
-      ? "Index (Base = 100)"
-      : macroNormalization === "Z-score (standardize)"
-        ? "Z-score"
-        : "Value (original units)";
 
   const activeDotcom = cohortToggles.dotcom ? dotcom : [];
   const activeAiPure = cohortToggles.aiPure ? aiPure : [];
   const activeAiBroad = cohortToggles.aiBroad ? aiBroad : [];
 
-  // Peak windows
   const dotPeak = activeDotcom.filter((r) => [1999, 2000].includes(r.Year));
   const aiPurePeak = activeAiPure.filter((r) =>
     [2023, 2024, 2025].includes(r.Year)
@@ -990,57 +876,30 @@ function App() {
   const pureMed = medianLogPs(activeAiPure, [2023, 2024, 2025]);
   const broadMed = medianLogPs(activeAiBroad, [2023, 2024, 2025]);
 
-  const updateToggle = (key) => {
-    setCohortToggles((prev) => ({ ...prev, [key]: !prev[key] }));
-  };
+  const macroFiltered = macroRows.slice(macroRange[0], macroRange[1] + 1);
+  const macroSelectedCols = macroColsState.filter((c) => macroSelection[c]);
+  const macroNormData = normalizeMacro(
+    macroFiltered,
+    macroSelectedCols,
+    macroNormalization,
+    macroRows
+  );
 
-  const handleRangeChange = (idx, value) => {
-    const maxIdx = Math.max(macroRows.length - 1, 0);
-    const clamped = Math.min(Math.max(0, value), maxIdx);
-    setMacroRange(([start, end]) => {
-      if (idx === 0) {
-        const nextStart = Math.min(clamped, end);
-        return [nextStart, Math.max(nextStart, end)];
-      }
-      const nextEnd = Math.max(clamped, start);
-      return [Math.min(start, nextEnd), nextEnd];
-    });
-  };
-
-  const toggleMacroColumn = (col) => {
-    setMacroSelection((prev) => ({ ...prev, [col]: !prev[col] }));
-  };
-
-  const buildMacroSeries = (rows, normalizedRows) =>
-    macroSelected.map((col, idx) => ({
+  const buildSeries = (data, normData) =>
+    macroSelectedCols.map((col, i) => ({
       label: col,
-      color: MACRO_COLORS[idx % MACRO_COLORS.length],
-      data: rows
-        .map((row, i) => {
-          const norm = normalizedRows[i]?.[col];
-          if (norm == null) return null;
-          return { x: row.Date.getTime(), y: norm, original: row[col] };
+      color: MACRO_COLORS[i % MACRO_COLORS.length],
+      data: data
+        .map((row, idx) => {
+          const y = normData[idx]?.[col];
+          return y != null
+            ? { x: row.Date.getTime(), y, original: row[col] }
+            : null;
         })
         .filter(Boolean),
     }));
 
-  let macroSeries = buildMacroSeries(macroFiltered, macroNormalized);
-  let macroChartYTitle = macroYTitle;
-
-  if (
-    !macroSeries.some((s) => s.data.length) &&
-    macroFiltered.length &&
-    macroSelected.length
-  ) {
-    const fallbackNorm = normalizeMacro(
-      macroFiltered,
-      macroSelected,
-      "None",
-      macroFiltered
-    );
-    macroSeries = buildMacroSeries(macroFiltered, fallbackNorm);
-    macroChartYTitle = "Value (original units)";
-  }
+  const macroSeries = buildSeries(macroFiltered, macroNormData);
 
   const zoomRanges = {
     "AI Boom (2022–2025)": [
@@ -1059,66 +918,42 @@ function App() {
       new Date("2007-01-01"),
       new Date("2015-12-31"),
     ],
-    "Reaganomics (1981–1989)": [
-      new Date("1981-01-01"),
-      new Date("1989-12-31"),
-    ],
+    Reaganomics: [new Date("1981-01-01"), new Date("1989-12-31")],
   };
 
   const zoomDates = zoomRanges[macroZoom];
   const macroZoomRows =
-    macroZoom === "None" || !zoomDates
+    !macroZoom || macroZoom === "None" || !zoomDates
       ? []
-      : filterMacroByDate(macroRows, zoomDates[0], zoomDates[1]);
+      : macroRows.filter(
+          (r) => r.Date >= zoomDates[0] && r.Date <= zoomDates[1]
+        );
   const macroZoomNorm = normalizeMacro(
     macroZoomRows,
-    macroSelected,
+    macroSelectedCols,
     macroNormalization,
-    macroReference
+    macroRows
   );
+  const macroZoomSeries = buildSeries(macroZoomRows, macroZoomNorm);
 
-  let macroZoomSeries = buildMacroSeries(macroZoomRows, macroZoomNorm);
-  let macroZoomYTitle = macroYTitle;
+  const toggleCohort = (k) =>
+    setCohortToggles((p) => ({ ...p, [k]: !p[k] }));
+  const toggleMacroCol = (c) =>
+    setMacroSelection((p) => ({ ...p, [c]: !p[c] }));
 
-  if (
-    macroZoomRows.length &&
-    macroSelected.length &&
-    !macroZoomSeries.some((s) => s.data.length)
-  ) {
-    const fallbackNorm = normalizeMacro(
-      macroZoomRows,
-      macroSelected,
-      "None",
-      macroZoomRows
-    );
-    macroZoomSeries = buildMacroSeries(macroZoomRows, fallbackNorm);
-    macroZoomYTitle = "Value (original units)";
-  }
-
-  const macroStartLabel =
-    macroRows[macroRange[0]] && macroRows[macroRange[0]].Date
-      ? formatDateLabel(macroRows[macroRange[0]].Date)
-      : "—";
-  const macroEndLabel =
-    macroRows[macroRange[1]] && macroRows[macroRange[1]].Date
-      ? formatDateLabel(macroRows[macroRange[1]].Date)
-      : "—";
-
-  const storyDetails = {
+  const storyContent = {
     "ps-trend": {
       title: "Heat over time",
-      body:
-        "Dot-com P/S averages went vertical in 1999–2000 as revenue lagged valuations, while today's AI ramp is steeper than Big Tech's AI era but still anchored by real businesses.",
+      body: "Dot-com valuations rocketed on top of single-product web ideas, often with fragile business models. Today's AI excitement sits on cash-generating platforms.",
       bullets: [
-        "Dot-com: the line spikes sharply as speculation decouples from fundamentals.",
+        "Dot-com: sharp spike as speculation decouples from fundamentals.",
         "Pure-play AI: averages rise faster than Big Tech AI thanks to narrow revenue bases.",
         "Big Tech AI: steadier climb because diversified platforms buffer hype swings.",
       ],
     },
     peaks: {
       title: "Peak distributions",
-      body:
-        "Peak windows show where cohorts cluster. Dot-com names piled up at extreme valuations, pure AI sits above Big Tech, but neither revisit 2000's mania.",
+      body: "Peak windows show where cohorts cluster. Dot-com names piled up at extreme valuations, pure AI sits above Big Tech, but neither revisit 2000's mania.",
       bullets: [
         "Dot-com: box sits high with long whiskers—classic froth.",
         "Pure-play AI: higher medians than Big Tech but tighter than dot-com peaks.",
@@ -1126,9 +961,8 @@ function App() {
       ],
     },
     scale: {
-      title: "Scale vs. revenue",
-      body:
-        "On the log–log scatter, Big Tech spans huge revenue bases with healthy market-cap alignment. Dot-com and pure AI points overlap across log values, reflecting similar speculative pockets, while Big Tech remains comparatively orderly.",
+      title: "Scale vs. Revenue",
+      body: "On the log–log scatter, Big Tech spans huge revenue bases with healthy market-cap alignment. Dot-com and pure AI points overlap across log values.",
       bullets: [
         "Dot-com vs. Pure AI: overlapping clouds show both chase value ahead of revenue.",
         "Big Tech AI: trends up and to the right with fewer outliers.",
@@ -1137,8 +971,7 @@ function App() {
     },
     median: {
       title: "Typical peaks",
-      body:
-        "Median P/S at cohort peaks highlights cushion. Big Tech AI stays near sustainable bands, while pure AI floats higher—still calmer than dot-com extremes.",
+      body: "Median P/S at cohort peaks highlights cushion. Big Tech AI stays nearer sustainable bands, while pure AI floats higher—still calmer than dot-com extremes.",
       bullets: [
         "Dot-com: elevated medians underline the bubble's breadth.",
         "Pure-play AI: higher medians hint at optimism priced in before revenue catches up.",
@@ -1150,219 +983,139 @@ function App() {
   return (
     <div className="page">
       <div className="hero">
-        <div>
-          <div className="tag">Dot-com vs AI · Valuation / Revenue</div>
-          <h1>Is there an AI bubble? Compare it to dot-com with data.</h1>
-          <p>
-            The story below pairs narrative with evidence so the visuals show
-            exactly what the text claims. We contrast the late-1990s dot-com
-            spike with today&apos;s AI surge, highlighting why diversified giants
-            (Microsoft, Amazon, Alphabet, Meta, NVIDIA, plus the rest of the Big
-            10 platform companies) are structurally safer than narrow pure-play
-            AI firms chasing future promise.
-          </p>
-          {loading && (
-            <p
-              style={{
-                marginTop: 8,
-                color: "var(--muted)",
-                fontSize: "0.9rem",
-              }}
-            >
-              Loading datasets&hellip;
-            </p>
-          )}
-          {error && (
-            <p
-              style={{
-                marginTop: 8,
-                color: "#fecaca",
-                fontSize: "0.9rem",
-              }}
-            >
-              {error}
-            </p>
-          )}
-          {usedFallback && (
-            <p
-              style={{
-                marginTop: 8,
-                color: "#fde68a",
-                fontSize: "0.9rem",
-              }}
-            >
-              Showing the bundled copy of the datasets so the charts stay visible
-              even if your browser blocks local fetches.
-            </p>
-          )}
-          <div className="controls">
-            <label className="toggle-pill">
-              <input
-                type="checkbox"
-                checked={cohortToggles.dotcom}
-                onChange={() => updateToggle("dotcom")}
-              />
-              Dot-com cohort
-            </label>
-            <label className="toggle-pill">
-              <input
-                type="checkbox"
-                checked={cohortToggles.aiPure}
-                onChange={() => updateToggle("aiPure")}
-              />
-              Big Tech AI cohort
-            </label>
-            <label className="toggle-pill">
-              <input
-                type="checkbox"
-                checked={cohortToggles.aiBroad}
-                onChange={() => updateToggle("aiBroad")}
-              />
-              Pure-play AI cohort
-            </label>
-          </div>
+        <div className="tag">Dot-com vs AI</div>
+        <h1>Is the AI bubble real?</h1>
+        <p>
+          We contrast the late-1990s dot-com spike with today&apos;s AI
+          surge. See why diversified giants are structurally safer than
+          the narrow bets of the past.
+        </p>
+        <div className="controls-row">
+          <label className="toggle-pill">
+            <input
+              type="checkbox"
+              checked={cohortToggles.dotcom}
+              onChange={() => toggleCohort("dotcom")}
+            />{" "}
+            Dot-com
+          </label>
+          <label className="toggle-pill">
+            <input
+              type="checkbox"
+              checked={cohortToggles.aiPure}
+              onChange={() => toggleCohort("aiPure")}
+            />{" "}
+            Big Tech AI
+          </label>
+          <label className="toggle-pill">
+            <input
+              type="checkbox"
+              checked={cohortToggles.aiBroad}
+              onChange={() => toggleCohort("aiBroad")}
+            />{" "}
+            Pure-play AI
+          </label>
         </div>
       </div>
 
       <div className="story-section">
-        <div className="tag">Story first, visuals that back it up</div>
-        <h2 style={{ marginBottom: 10 }}>
-          The AI bubble exists, but it&apos;s built on stronger foundations
-        </h2>
+        <div className="section-header">
+          <h2>The Data Story</h2>
+        </div>
+
         <div className="story-grid">
-          <div className="card story-copy">
-            <p>
-              Dot-com valuations rocketed on top of single-product web ideas,
-              often with fragile business models. Today&apos;s AI excitement sits on
-              cash-generating platforms: Microsoft blends Office, Windows,
-              Azure, GitHub, and Xbox; Amazon marries e-commerce, logistics,
-              AWS, ads, and Prime; Alphabet pairs Search and YouTube with
-              Android, Maps, and Google Cloud; Meta runs global social graphs
-              while funding AR/VR; NVIDIA sells the GPUs and software stacks
-              that power gaming, cars, science, and AI training. That breadth
-              cushions any single shock.
-            </p>
-            <p>
-              Pure AI names (Palantir, C3.ai, UiPath, SoundHound, and peers)
-              look more like late-90s internet bets: narrower focus, fewer
-              moats, and valuations resting on what the future might bring.
-              Their Price-to-Sales multiples float higher and swing harder,
-              echoing bubble behavior even if they rarely hit the 200x–600x
-              extremes of 1999–2000. Meanwhile, Big Tech trades at more modest
-              5x–20x ranges because investors can underwrite dependable revenue
-              engines. The charts to the right only surface one at a time so the
-              visual evidence cleanly follows each point in the story.
-            </p>
-          </div>
-          <div className="card chart-card story-chart">
+          <div className="card story-content">
             <div className="story-tabs">
-              <button
-                className={
-                  activeStory === "ps-trend" ? "story-btn active" : "story-btn"
-                }
-                onClick={() => setActiveStory("ps-trend")}
-              >
-                1 · Heat over time
-              </button>
-              <button
-                className={
-                  activeStory === "peaks" ? "story-btn active" : "story-btn"
-                }
-                onClick={() => setActiveStory("peaks")}
-              >
-                2 · Peak distributions
-              </button>
-              <button
-                className={
-                  activeStory === "scale" ? "story-btn active" : "story-btn"
-                }
-                onClick={() => setActiveStory("scale")}
-              >
-                3 · Scale vs. revenue
-              </button>
-              <button
-                className={
-                  activeStory === "median" ? "story-btn active" : "story-btn"
-                }
-                onClick={() => setActiveStory("median")}
-              >
-                4 · Typical peaks
-              </button>
+              {Object.keys(storyContent).map((k) => (
+                <button
+                  key={k}
+                  className={`story-btn ${
+                    activeStory === k ? "active" : ""
+                  }`}
+                  onClick={() => setActiveStory(k)}
+                >
+                  {storyContent[k].title}
+                </button>
+              ))}
             </div>
-            <div className="story-body">
-              <div className="info-box">
-                <div className="info-headline">{storyDetails[activeStory].title}</div>
-                <p className="info-body">{storyDetails[activeStory].body}</p>
-                <ul>
-                  {storyDetails[activeStory].bullets.map((b, idx) => (
-                    <li key={idx}>{b}</li>
-                  ))}
-                </ul>
+            <div className="info-box">
+              <div className="info-headline">
+                {storyContent[activeStory].title}
               </div>
-              {!ready && !loading && (
-                <p style={{ color: "var(--muted)", marginTop: 6 }}>
-                  Waiting for data. Check that the CSV/XLSX files sit next to
-                  <code>frontend/index.html</code> when you host the page.
+              <p className="info-body">
+                {storyContent[activeStory].body}
+              </p>
+              <ul>
+                {storyContent[activeStory].bullets.map((b, i) => (
+                  <li key={i}>{b}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+
+          <div className="card chart-card">
+            <div className="chart-container">
+              {loading && (
+                <p
+                  style={{
+                    textAlign: "center",
+                    marginTop: 100,
+                    color: "var(--muted)",
+                  }}
+                >
+                  Loading datasets...
                 </p>
               )}
-              {ready && activeStory === "ps-trend" && (
-                <>
-                  <p className="chart-subtitle">
-                    The line chart shows how dot-com P/S averages exploded
-                    earlier and steeper than AI. Big Tech&apos;s AI-era multiples
-                    rise, but the slope is gentler because diversified revenue
-                    holds the line.
-                  </p>
-                  <AvgPsLineChart
-                    dotcom={activeDotcom}
-                    aiPure={activeAiPure}
-                    aiNiche={activeAiBroad}
-                  />
-                </>
+              {!loading && activeStory === "ps-trend" && (
+                <AvgPsLineChart
+                  dotcom={activeDotcom}
+                  aiPure={activeAiPure}
+                  aiBroad={activeAiBroad}
+                />
               )}
-              {ready && activeStory === "peaks" && (
-                <>
-                  <p className="chart-subtitle">
-                    The boxplot contrasts peak windows: dot-com names cluster at
-                    ultra-high P/S, pure AI sits higher than Big Tech, but both
-                    remain far more grounded than 1999–2000 mania.
-                  </p>
-                  <PeakBoxplotChart
-                    dotLog={dotPeakLog}
-                    pureLog={aiPurePeakLog}
-                    nicheLog={aiBroadPeakLog}
-                  />
-                </>
+              {!loading && activeStory === "peaks" && (
+                <PeakBoxplotChart
+                  dotLog={dotPeakLog}
+                  pureLog={aiPurePeakLog}
+                  broadLog={aiBroadPeakLog}
+                />
               )}
-              {ready && activeStory === "scale" && (
-                <>
-                  <p className="chart-subtitle">
-                    On the log–log scatter, Big Tech spreads across massive
-                    revenue bases with healthier market-cap alignment. Dot-com
-                    and pure AI points overlap across log values—both chasing
-                    valuation ahead of revenue—while Big Tech stays orderly.
-                  </p>
-                  <McRevScatterChart
-                    dotcom={activeDotcom}
-                    aiPure={activeAiPure}
-                    aiNiche={activeAiBroad}
-                  />
-                </>
+              {!loading && activeStory === "scale" && (
+                <McRevScatterChart
+                  dotcom={activeDotcom}
+                  aiPure={activeAiPure}
+                  aiBroad={activeAiBroad}
+                />
               )}
-              {ready && activeStory === "median" && (
-                <>
-                  <p className="chart-subtitle">
-                    Median P/S at the peak shows the cushion: diversified AI
-                    leaders stay closer to sustainable bands, while pure AI sits
-                    higher, signaling a bubble—but not the runaway dot-com
-                    extremes.
-                  </p>
-                  <MedianPsBarChart
-                    dotMed={dotMed}
-                    pureMed={pureMed}
-                    nicheMed={broadMed}
-                  />
-                </>
+              {!loading && activeStory === "median" && (
+                <MedianPsBarChart
+                  dotMed={dotMed}
+                  pureMed={pureMed}
+                  broadMed={broadMed}
+                />
+              )}
+            </div>
+            <div className="chart-subtitle">
+              {activeStory === "ps-trend" &&
+                "Logarithmic scale showing valuation multiples over time. Dot-com bubble clearly visible on the left."}
+              {activeStory === "peaks" &&
+                "Distribution of Valuation/Revenue ratios at market peaks. Dot-com outliers sit much higher."}
+              {activeStory === "scale" &&
+                "Comparing Market Cap vs Revenue on a log-log scale. Big Tech aligns with scale; Dot-com scattered."}
+              {activeStory === "median" &&
+                "Median Price-to-Sales ratio at the height of each era. Big Tech valuations remain grounded."}
+              {usingFallback && (
+                <span
+                  style={{
+                    display: "block",
+                    color: "#fde047",
+                    fontSize: "0.8rem",
+                    marginTop: 8,
+                  }}
+                >
+                  Note: Some cohorts are missing or partially loaded. Check
+                  file paths and CSV headers if something looks off.
+                </span>
               )}
             </div>
           </div>
@@ -1370,57 +1123,21 @@ function App() {
       </div>
 
       <div className="macro-section">
-        <div className="tag">Macroeconomic trends</div>
-        <h2 style={{ marginBottom: 6 }}>Inflation, unemployment, rates, GDP, NASDAQ</h2>
-        <p className="chart-subtitle" style={{ maxWidth: 820, marginTop: 0 }}>
-          Mirrors the macrodata Streamlit app: choose a date window, normalization
-          method (Z-score or index to 100), toggle series, and optionally zoom into
-          a predefined era for a second chart.
-        </p>
-        {macroLoading && (
-          <p style={{ color: "var(--muted)", marginTop: 8 }}>
-            Loading macro dataset&hellip;
-          </p>
-        )}
-        {macroError && (
-          <p style={{ color: "#fecaca", marginTop: 8 }}>{macroError}</p>
-        )}
+        <div className="section-header">
+          <h2>Macroeconomic Context</h2>
+        </div>
+
         <div className="macro-layout">
           <div className="card macro-controls">
-            <h3 style={{ marginTop: 0 }}>Controls</h3>
+            <h3>Configuration</h3>
             <div className="control-group">
-              <div className="field">
-                <label>Date range</label>
-                <div className="range-row">
-                  <input
-                    type="range"
-                    min={0}
-                    max={Math.max(macroRows.length - 1, 0)}
-                    value={macroRange[0]}
-                    onChange={(e) => handleRangeChange(0, Number(e.target.value))}
-                    disabled={!macroRows.length}
-                  />
-                  <input
-                    type="range"
-                    min={0}
-                    max={Math.max(macroRows.length - 1, 0)}
-                    value={macroRange[1]}
-                    onChange={(e) => handleRangeChange(1, Number(e.target.value))}
-                    disabled={!macroRows.length}
-                  />
-                </div>
-                <div className="badges" style={{ marginTop: 6 }}>
-                  <span className="badge">Start: {macroStartLabel}</span>
-                  <span className="badge">End: {macroEndLabel}</span>
-                </div>
-              </div>
-
               <div className="field">
                 <label>Normalization</label>
                 <select
                   value={macroNormalization}
-                  onChange={(e) => setMacroNormalization(e.target.value)}
-                  disabled={!macroRows.length}
+                  onChange={(e) =>
+                    setMacroNormalization(e.target.value)
+                  }
                 >
                   <option>Z-score (standardize)</option>
                   <option>Index to 100</option>
@@ -1429,89 +1146,157 @@ function App() {
               </div>
 
               <div className="field">
-                <label>Zoom period (second chart)</label>
-                <select
-                  value={macroZoom}
-                  onChange={(e) => setMacroZoom(e.target.value)}
-                  disabled={!macroRows.length}
-                >
-                  <option>AI Boom (2022–2025)</option>
-                  <option>Dot-com Bubble (1995–2002)</option>
-                  <option>Housing Bubble (2003–2009)</option>
-                  <option>Smartphone Era (2007–2015)</option>
-                  <option>Reaganomics (1981–1989)</option>
-                  <option>None</option>
-                </select>
+                <label>Date Range</label>
+                <div className="badges">
+                  <span>
+                    {macroRows[macroRange[0]]?.Date
+                      ? formatDateLabel(
+                          macroRows[macroRange[0]].Date
+                        )
+                      : "Start"}
+                  </span>
+                  <span>
+                    {macroRows[macroRange[1]]?.Date
+                      ? formatDateLabel(
+                          macroRows[macroRange[1]].Date
+                        )
+                      : "End"}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={Math.max(macroRows.length - 1, 0)}
+                  value={macroRange[0]}
+                  onChange={(e) =>
+                    setMacroRange([
+                      Math.min(
+                        Number(e.target.value),
+                        macroRange[1]
+                      ),
+                      macroRange[1],
+                    ])
+                  }
+                />
+                <input
+                  type="range"
+                  min={0}
+                  max={Math.max(macroRows.length - 1, 0)}
+                  value={macroRange[1]}
+                  onChange={(e) =>
+                    setMacroRange([
+                      macroRange[0],
+                      Math.max(
+                        Number(e.target.value),
+                        macroRange[0]
+                      ),
+                    ])
+                  }
+                />
               </div>
 
               <div className="field">
-                <label>Series</label>
-                <div className="controls">
-                  {macroColumns.map((col) => (
-                    <label key={col} className="toggle-pill">
+                <label>Indicators</label>
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 8,
+                  }}
+                >
+                  {macroColsState.map((c) => (
+                    <label
+                      key={c}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        fontSize: "0.9rem",
+                        color: "#cbd5e1",
+                        cursor: "pointer",
+                      }}
+                    >
                       <input
                         type="checkbox"
-                        checked={!!macroSelection[col]}
-                        onChange={() => toggleMacroColumn(col)}
+                        checked={!!macroSelection[c]}
+                        onChange={() => toggleMacroCol(c)}
+                        style={{
+                          width: 16,
+                          height: 16,
+                          accentColor: "var(--accent)",
+                        }}
                       />
-                      {col}
+                      {c}
                     </label>
                   ))}
-                  {!macroColumns.length && (
-                    <span style={{ color: "var(--muted)" }}>
-                      Waiting for macro columns&hellip;
-                    </span>
-                  )}
                 </div>
+              </div>
+
+              <div className="field">
+                <label>Compare Era</label>
+                <select
+                  value={macroZoom}
+                  onChange={(e) => setMacroZoom(e.target.value)}
+                >
+                  {Object.keys(zoomRanges).map((z) => (
+                    <option key={z}>{z}</option>
+                  ))}
+                  <option>None</option>
+                </select>
               </div>
             </div>
           </div>
 
-          <div className="card chart-card macro-chart-card">
-            <h3 style={{ marginTop: 0 }}>Macroeconomic trends (full range)</h3>
-            <p className="chart-subtitle">
-              Hover to see actual values; y-axis follows the selected normalization.
-            </p>
-            {macroSelected.length && macroSeries.some((s) => s.data.length) ? (
-              <MacroLineChart series={macroSeries} yTitle={macroChartYTitle} />
-            ) : (
-              <p style={{ color: "var(--muted)", marginTop: 12 }}>
-                Choose at least one macro series and make sure the date range
-                contains data.
-              </p>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 24,
+            }}
+          >
+            <div className="card chart-card">
+              <h3
+                style={{
+                  margin: "0 0 10px 0",
+                  fontSize: "1rem",
+                  color: "var(--muted)",
+                }}
+              >
+                Full History
+              </h3>
+              <div className="chart-container">
+                <MacroLineChart
+                  series={macroSeries}
+                  yTitle={macroNormalization}
+                />
+              </div>
+            </div>
+
+            {macroZoom !== "None" && (
+              <div className="card chart-card">
+                <h3
+                  style={{
+                    margin: "0 0 10px 0",
+                    fontSize: "1rem",
+                    color: "var(--muted)",
+                  }}
+                >
+                  Zoom: {macroZoom}
+                </h3>
+                <div
+                  className="chart-container"
+                  style={{ height: 320 }}
+                >
+                  <MacroLineChart
+                    series={macroZoomSeries}
+                    yTitle={macroNormalization}
+                  />
+                </div>
+              </div>
             )}
           </div>
-
-          {macroZoom !== "None" && (
-            <div className="card chart-card macro-chart-card full-span">
-              <h3 style={{ marginTop: 0 }}>Zoomed view: {macroZoom}</h3>
-              <p className="chart-subtitle">
-                Uses the same normalization as the main chart, scoped to the
-                selected historical window.
-              </p>
-              {macroSelected.length && macroZoomSeries.some((s) => s.data.length) ? (
-                <MacroLineChart
-                  series={macroZoomSeries}
-                  yTitle={macroZoomYTitle}
-                  height={360}
-                />
-              ) : (
-                <p style={{ color: "var(--muted)", marginTop: 12 }}>
-                  No zoom data available for the chosen period/series.
-                </p>
-              )}
-            </div>
-          )}
         </div>
       </div>
-
-      {!ready && !loading && (
-        <p style={{ color: "var(--muted)", marginTop: 32 }}>
-          Waiting for data. Check that <code>Dotcom.csv</code>, <code>PureAI.xlsx</code>
-          and <code>HighTech.xlsx</code> sit next to <code>frontend/index.html</code>
-          when you host the page.
-        </p>
-      )}
     </div>
   );
 }
