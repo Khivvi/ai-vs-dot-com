@@ -480,6 +480,20 @@ function PeakBoxplotChart({ dotLog, pureLog, broadLog }) {
     computeBoxStats(broadLog),
   ];
 
+  const yBounds = (() => {
+    const finiteStats = realStats.filter(
+      (s) => Number.isFinite(s.min) && Number.isFinite(s.max)
+    );
+    if (!finiteStats.length) return { min: undefined, max: undefined };
+
+    const minVal = Math.min(...finiteStats.map((s) => s.min));
+    const maxVal = Math.max(...finiteStats.map((s) => s.max));
+    const range = Math.max(1, maxVal - minVal);
+    const pad = range * 0.15;
+
+    return { min: minVal - pad, max: maxVal + pad };
+  })();
+
   useChart(
     canvasRef,
     (ctx) => {
@@ -582,6 +596,8 @@ function PeakBoxplotChart({ dotLog, pureLog, broadLog }) {
             x: { grid: { display: false } },
             y: {
               title: { display: true, text: "log(P/S Distribution)" },
+              suggestedMin: yBounds.min,
+              suggestedMax: yBounds.max,
             },
           },
         },
